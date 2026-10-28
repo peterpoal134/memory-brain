@@ -100,7 +100,9 @@ class MemoryBrainPlugin(Star):
         self._last_voice_id = ""
         self._last_voice_block = ""
         self._last_hits: dict[str, list[int]] = {}
-        self._correction_re = re.compile(r"不是|不对|记错|没说过|别乱说|错了|胡说")
+        self._correction_re = re.compile(
+            r"不是这样|不是这个意思|不是那样|你记错|记错了|说错了|你错了|我没说过|别乱说|胡说"
+        )
         self._vision_warned = False
         self.multimodal_in_group = bool(self.config.get("multimodal_in_group", False))
         try:

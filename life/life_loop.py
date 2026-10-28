@@ -800,7 +800,11 @@ def phone_play() -> str:
                 texts.append(t)
         head = "；".join(texts[:4])[:120]
         liked = False
-        if head and phone_interested(head):
+        # 只在视频流里点赞；钱包/提现/支付/发布等页面一律不碰
+        sensitive = ("钱包", "提现", "支付", "订单", "充值", "购买", "客服", "发布作品", "编辑主页", "开播")
+        on_feed = ("首页" in texts and "朋友" in texts) or ("推荐" in texts and "关注" in texts)
+        safe = on_feed and not any(w in head for w in sensitive)
+        if head and safe and phone_interested(head):
             rate = load_json(RATE, {})
             now_ts = time.time()
             if now_ts - rate.get("like", 0) > 900:

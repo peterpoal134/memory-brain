@@ -138,6 +138,8 @@ class PersonaStatePlugin(Star):
         base = _data_dir()
         base.mkdir(parents=True, exist_ok=True)
 
+        self.base = base
+        self._last_hist = 0.0
         self.mood = JsonStore(base / "mood.json", default_mood)
         self.affinity = JsonStore(base / "affinity.json", default_affinity)
         self.emotional = JsonStore(base / "emotional.json", _empty_emotional)
@@ -237,6 +239,7 @@ class PersonaStatePlugin(Star):
         is_group = bool(event.get_group_id())
         name = (event.get_sender_name() or "").strip()[:24]
 
+        self._record_energy(now)
         before = float(self.mood.data.get("valence", 10))
         self.mood.data = apply_message(self.mood.data, now, text, is_group=is_group)
         try:
@@ -256,6 +259,29 @@ class PersonaStatePlugin(Star):
         if now - self._last_save >= SAVE_INTERVAL:
             self._save()
         return True
+
+    def _record_energy(self, now: float) -> None:
+        """每小时记一个精力点，用来画曲线。"""
+        if now - self._last_hist < 3600:
+            return
+        self._last_hist = now
+        try:
+            path = self.base / "energy_history.jsonl"
+            view = mood_view(self.mood.data, now)
+            import json
+
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ts": now,
+                    "energy": round(float(view["energy"]), 1),
+                    "valence": round(float(view["valence"]), 1),
+                }, ensure_ascii=False) + "\n")
+            cutoff = now - 7 * 86400
+            lines = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+                     if ln.strip() and json.loads(ln).get("ts", 0) >= cutoff]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            logger.debug("[state] 精力曲线写入失败", exc_info=True)
 
     def _maybe_record(
         self, now: float, text: str, sender: str, name: str, delta: float

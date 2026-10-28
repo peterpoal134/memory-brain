@@ -105,10 +105,17 @@ def decay_mood(data: dict[str, Any], now: float) -> dict[str, Any]:
             MOOD_BASELINE["valence"],
             DECAY_PER_HOUR["valence"] * hours,
         )
+        # 精力按时间段恢复：夜里睡觉、午间小睡回得更快
+        mid_hour = time.localtime((now + float(data.get("updated_at", now))) / 2).tm_hour
+        rate, target = DECAY_PER_HOUR["energy"], MOOD_BASELINE["energy"]
+        if mid_hour >= 23 or mid_hour < 7:
+            rate, target = 7.0, 80.0      # 夜间睡眠
+        elif 12 <= mid_hour < 14:
+            rate, target = 8.0, 65.0      # 午睡
         data["energy"] = _toward(
             float(data.get("energy", MOOD_BASELINE["energy"])),
-            MOOD_BASELINE["energy"],
-            DECAY_PER_HOUR["energy"] * hours,
+            target,
+            rate * hours,
         )
         data["cling_adj"] = _toward(
             float(data.get("cling_adj", 0.0)), 0.0, DECAY_PER_HOUR["cling_adj"] * hours
@@ -134,9 +141,9 @@ def apply_message(
 
     data["valence"] = clamp(float(data.get("valence", 10)) + dv, -100, 100)
     # 聊天本身耗精力；深夜更明显
-    drain = 0.15 if is_group else 0.35
+    drain = 0.06 if is_group else 0.15
     if 0 <= hour < 6:
-        drain += 1.0
+        drain += 0.4
     data["energy"] = clamp(float(data.get("energy", 65)) - drain, 0, 100)
     # 被搭理会缓解黏人（一次别降太狠），被夸会更黏
     data["cling_adj"] = clamp(float(data.get("cling_adj", 0)) - 0.8 + dc, -20, 60)

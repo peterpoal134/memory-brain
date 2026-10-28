@@ -77,6 +77,7 @@
       <h2>心情</h2>
       <div class="val" id="v-valence">–<small>/100</small></div>
       <div class="lab" id="l-valence">&nbsp;</div>
+      <div class="lab" id="l-emotion" style="opacity:.85">&nbsp;</div>
       <input type="range" id="s-valence" min="-100" max="100" step="1" />
     </div>
     <div class="card">
@@ -84,12 +85,36 @@
       <div class="val" id="v-energy">–<small>/100</small></div>
       <div class="lab" id="l-energy">&nbsp;</div>
       <input type="range" id="s-energy" min="0" max="100" step="1" />
+      <canvas id="energy-chart" height="46" style="width:100%;margin-top:8px;display:block"></canvas>
     </div>
     <div class="card">
       <h2>黏人</h2>
       <div class="val" id="v-cling">–<small>/100</small></div>
       <div class="lab" id="l-cling">&nbsp;</div>
       <input type="range" id="s-cling" min="0" max="100" step="1" />
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>兴趣</h2>
+    <div id="interest-list"><div class="empty">还没有兴趣数据</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>生活 <span class="sub" id="life-sub"></span></h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">
+      <div>
+        <div class="lab" style="margin-bottom:4px">最近动作</div>
+        <div id="life-actions"><div class="empty">暂无</div></div>
+      </div>
+      <div>
+        <div class="lab" style="margin-bottom:4px">笔记</div>
+        <div id="life-notes"><div class="empty">暂无</div></div>
+      </div>
+      <div>
+        <div class="lab" style="margin-bottom:4px">看过</div>
+        <div id="life-watched"><div class="empty">暂无</div></div>
+      </div>
     </div>
   </div>
 
@@ -155,6 +180,94 @@
 
   function pct(v, min, max) {
     return Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
+  }
+
+  function fillLife(id, rows, fmt) {
+    var box = document.getElementById(id);
+    if (!rows || !rows.length) { box.innerHTML = '<div class="empty">暂无</div>'; return; }
+    box.innerHTML = '';
+    rows.slice(-8).reverse().forEach(function (r) {
+      var el = document.createElement('div');
+      el.style.cssText = 'font-size:11.5px;line-height:1.5;padding:3px 0;border-bottom:1px solid var(--line)';
+      el.textContent = fmt(r);
+      box.appendChild(el);
+    });
+  }
+
+  function renderLife(d) {
+    fillLife('life-actions', d.actions || [], function (r) {
+      return (r.date || '') + '  ' + (r.action || '') + (r.reason ? ' · ' + r.reason : '');
+    });
+    fillLife('life-notes', d.notes || [], function (r) {
+      return (r.keep === 'long' ? '【长期】' : '【临时】') + (r.text || '');
+    });
+    fillLife('life-watched', d.watched || [], function (r) {
+      return (r.date || '') + '  ' + ((r.items || [])[0] || '');
+    });
+    var sub = document.getElementById('life-sub');
+    if (sub) sub.textContent = '动作 ' + (d.actions || []).length + ' · 笔记 ' + (d.notes || []).length + ' · 看过 ' + (d.watched || []).length;
+  }
+
+  function renderEnergy(points) {
+    var c = document.getElementById('energy-chart');
+    if (!c) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = c.clientWidth || 300, h = 46;
+    c.width = w * dpr; c.height = h * dpr;
+    var ctx = c.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,.08)';
+    ctx.beginPath(); ctx.moveTo(0, h - 1); ctx.lineTo(w, h - 1); ctx.stroke();
+    if (!points || points.length < 2) {
+      ctx.fillStyle = 'rgba(140,165,180,.7)';
+      ctx.font = '11px -apple-system,sans-serif';
+      ctx.fillText('攒够 2 个点后显示曲线', 6, 26);
+      return;
+    }
+    var min = 0, max = 100;
+    ctx.beginPath();
+    points.forEach(function (p, i) {
+      var x = (i / (points.length - 1)) * (w - 4) + 2;
+      var y = h - 4 - ((p.energy - min) / (max - min)) * (h - 8);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = '#39ff8f';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    var last = points[points.length - 1];
+    ctx.fillStyle = '#bff8ff';
+    ctx.font = '10px ui-monospace,monospace';
+    ctx.fillText('现在 ' + last.energy.toFixed(0), 4, 12);
+  }
+
+  function renderInterests(items) {
+    var box = document.getElementById('interest-list');
+    if (!items || !items.length) {
+      box.innerHTML = '<div class="empty">还没有兴趣数据（生活层没跑过）</div>';
+      return;
+    }
+    box.innerHTML = '';
+    items.forEach(function (it) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px';
+      var name = document.createElement('span');
+      name.style.cssText = 'width:150px;color:var(--fg)';
+      name.textContent = it.name;
+      var bar = document.createElement('div');
+      bar.style.cssText = 'flex:1;height:6px;background:#1a2430;border-radius:3px;overflow:hidden';
+      var fill = document.createElement('div');
+      fill.style.cssText = 'height:100%;width:' + Math.round((it.weight || 0) * 100) + '%;background:var(--accent)';
+      bar.appendChild(fill);
+      var w = document.createElement('span');
+      w.style.cssText = 'width:34px;text-align:right;color:var(--muted)';
+      w.textContent = (it.weight || 0).toFixed(2);
+      var tags = document.createElement('span');
+      tags.style.cssText = 'width:110px;color:var(--muted);font-size:11px';
+      tags.textContent = (it.tags || []).join(' / ');
+      row.appendChild(name); row.appendChild(bar); row.appendChild(w); row.appendChild(tags);
+      box.appendChild(row);
+    });
   }
 
   function renderMood(m) {
@@ -282,12 +395,18 @@
       var results = await Promise.all([
         call('page/state', null),
         call('page/grudges', null),
-        call('page/core', null)
+        call('page/core', null),
+        call('page/interests', null),
+        call('page/life', null),
+        call('page/energy', null)
       ]);
       renderMood(results[0].mood);
       renderAffinity(results[0].affinity || []);
       renderGrudges(results[1]);
       renderCore(results[2]);
+      renderInterests(results[3].items || []);
+      renderLife(results[4] || {});
+      renderEnergy((results[5] || {}).points || []);
       var c = results[0].counts || {};
       document.getElementById('sub').textContent =
         '旧账 ' + (c.grudges || 0) + ' 条 · 识海 ' + (c.core || 0) + ' 条 · 记仇度 ' +

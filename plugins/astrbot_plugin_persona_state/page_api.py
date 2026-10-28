@@ -38,6 +38,9 @@ class PageApi:
         register = self.plugin.context.register_web_api
         routes = [
             ("/state", self.get_state, ["GET"], "状态总览"),
+            ("/interests", self.get_interests, ["GET"], "兴趣列表"),
+            ("/life", self.get_life, ["GET"], "生活动态"),
+            ("/energy", self.get_energy, ["GET"], "精力曲线"),
             ("/mood", self.set_mood, ["POST"], "设置情绪"),
             ("/affinity/set", self.set_affinity, ["POST"], "设置好感"),
             ("/affinity/delete", self.delete_affinity, ["POST"], "删除好感记录"),
@@ -80,6 +83,7 @@ class PageApi:
                     "mood": {
                         **{k: round(float(view[k]), 1) for k in ("valence", "energy", "clinginess")},
                         "labels": labels,
+                        "emotion": self._emotion_labels(),
                         "day_msgs": int(view["day_msgs"]),
                         "silent_hours": round(float(view["silent_hours"]), 1),
                     },
@@ -95,6 +99,125 @@ class PageApi:
         except Exception as exc:
             logger.exception("[state] 页面读取失败")
             return _err(str(exc))
+
+    def _emotion_labels(self) -> list[dict[str, Any]]:
+        try:
+            labels = ((self.plugin.mood.data or {}).get("pad") or {}).get("labels") or {}
+            rows = sorted(labels.items(), key=lambda x: -float(x[1]))[:4]
+            return [{"name": k, "score": round(float(v), 2)} for k, v in rows if float(v) >= 0.03]
+        except Exception:
+            return []
+
+    async def get_energy(self) -> dict[str, Any]:
+        import json
+
+        path = self.plugin.base / "energy_history.jsonl"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()[-72:]
+        except OSError:
+            lines = []
+        points = []
+        for line in lines:
+            try:
+                row = json.loads(line)
+                points.append({"ts": float(row.get("ts", 0)),
+                               "energy": float(row.get("energy", 0)),
+                               "valence": float(row.get("valence", 0))})
+            except Exception:
+                continue
+        return _ok({"points": points})
+
+    @staticmethod
+    def _life_dir():
+        import os
+        from pathlib import Path
+
+        env = os.environ.get("ASTRBOT_LIFE_DIR")
+        if env:
+            return Path(env)
+        root = Path(__file__).resolve()
+        for p in (root.parents[4] / "life", root.parents[2] / "life"):
+            if p.exists():
+                return p
+        return root.parents[4] / "life"
+
+    @staticmethod
+    def _read_jsonl(path, limit: int = 8) -> list[dict]:
+        import json
+
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
+        except OSError:
+            return []
+        rows = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return rows
+
+    async def get_life(self) -> dict[str, Any]:
+        base = self._life_dir()
+        actions = [
+            {
+                "date": r.get("date", ""),
+                "action": r.get("action", ""),
+                "reason": str(r.get("reason") or "")[:80],
+                "message": str(r.get("message") or "")[:80],
+            }
+            for r in self._read_jsonl(base / "actions.jsonl", 12)
+        ]
+        notes = [
+            {
+                "date": r.get("date", ""),
+                "kind": r.get("kind", ""),
+                "keep": r.get("keep", ""),
+                "text": str(r.get("text") or "")[:120],
+            }
+            for r in self._read_jsonl(base / "notes.jsonl", 12)
+        ]
+        watched = []
+        for r in self._read_jsonl(base / "watched.jsonl", 5):
+            items = [str(i.get("desc") or "")[:100] for i in (r.get("items") or [])]
+            watched.append({"date": r.get("date", ""), "items": items})
+        return _ok({"actions": actions, "notes": notes, "watched": watched})
+
+    async def get_interests(self) -> dict[str, Any]:
+        import json
+
+        from pathlib import Path
+
+        import os
+
+        env_dir = os.environ.get("ASTRBOT_LIFE_DIR")
+        if env_dir:
+            data = Path(env_dir) / "interests.json"
+        else:
+            root = Path(__file__).resolve()
+            candidates = [
+                root.parents[4] / "life" / "interests.json",  # AstrBot 同级
+                root.parents[2] / "life" / "interests.json",  # data/life
+            ]
+            data = next((p for p in candidates if p.exists()), candidates[0])
+        try:
+            rows = json.loads(data.read_text(encoding="utf-8"))
+        except Exception:
+            rows = []
+        items = [
+            {
+                "name": r.get("name"),
+                "weight": round(float(r.get("weight", 0)), 2),
+                "tags": r.get("tags") or [],
+            }
+            for r in rows
+            if isinstance(r, dict)
+        ]
+        items.sort(key=lambda x: -x["weight"])
+        return _ok({"items": items})
 
     async def get_grudges(self) -> dict[str, Any]:
         try:
