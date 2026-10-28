@@ -1,0 +1,236 @@
+{
+  "inject": {
+    "description": "把检索到的记忆注入提示词",
+    "hint": "关闭后只记录不注入（仍可用 /大脑 检索 手动查）。",
+    "type": "bool",
+    "default": true
+  },
+  "recall_k": {
+    "description": "每轮注入几条",
+    "hint": "默认 3，越多越费 token；建议 2-4。",
+    "type": "int",
+    "default": 3
+  },
+  "batch_size": {
+    "description": "多少条消息写成一段记忆",
+    "hint": "默认 12。太小会碎，太大会糊。",
+    "type": "int",
+    "default": 12
+  },
+  "embedding_provider_id": {
+    "description": "向量提供方 ID",
+    "hint": "留空则只用关键词检索（也能用，但没有「意思相近」的联想）。填 AstrBot 里 embedding 提供方的 id。",
+    "type": "string",
+    "default": ""
+  },
+  "decay_rate": {
+    "description": "每日衰减率",
+    "hint": "默认 0.01，即每天重要性乘 0.99。",
+    "type": "float",
+    "default": 0.01
+  },
+  "archive_below": {
+    "description": "归档阈值",
+    "hint": "重要性低于该值且超过天数就归档，不再参与检索。",
+    "type": "float",
+    "default": 0.3
+  },
+  "archive_days": {
+    "description": "归档天数",
+    "hint": "创建超过多少天才允许归档，默认 30。",
+    "type": "int",
+    "default": 30
+  },
+  "llm_summary": {
+    "description": "用模型整理记忆",
+    "hint": "开启后每批消息调一次模型做摘要+实体关系；关闭则拼接原文（省钱但图很粗）。",
+    "type": "bool",
+    "default": true
+  },
+  "alias_map": {
+    "description": "实体别名",
+    "hint": "格式 \"旧名=正名, 昵称=正名\"，例如 \"我=助手, 阿红=小红\"。睡觉整理时按这个合并节点。",
+    "type": "string",
+    "default": ""
+  },
+  "profile_enabled": {
+    "description": "自动生成人物画像",
+    "hint": "每天睡觉整理时，给最活跃的人/话题写一段印象。",
+    "type": "bool",
+    "default": true
+  },
+  "profile_max_per_run": {
+    "description": "每天最多几个",
+    "hint": "默认 5，每个一次模型调用。",
+    "type": "int",
+    "default": 5
+  },
+  "profile_min_degree": {
+    "description": "最少关联记忆数",
+    "hint": "关联记忆太少的实体不生成画像，默认 2。",
+    "type": "int",
+    "default": 2
+  },
+  "profile_interval_days": {
+    "description": "画像更新间隔（天）",
+    "hint": "默认 7 天更新一次。",
+    "type": "int",
+    "default": 7
+  },
+  "reflection_enabled": {
+    "description": "每日反思",
+    "hint": "每天写一篇「今天印象最深的三件事」，存成一条元记忆。",
+    "type": "bool",
+    "default": true
+  },
+  "recall_min_score": {
+    "description": "检索分数门槛",
+    "hint": "低于这个分数就不注入。默认 0.3；调高更省 token 也更保守。",
+    "type": "float",
+    "default": 0.3
+  },
+  "inject_in_group": {
+    "description": "群里也注入记忆",
+    "hint": "关闭后群里不注入长期记忆（画像仍按自己的开关）。",
+    "type": "bool",
+    "default": true
+  },
+  "inject_profile": {
+    "description": "把人物画像注入对话",
+    "hint": "说话人/提到的人有画像时，把印象带进提示词（约 150 token）。",
+    "type": "bool",
+    "default": true
+  },
+  "access_decay_boost": {
+    "description": "常用记忆的衰减减免",
+    "hint": "0.5 表示最近 30 天被访问过、访问达 10 次的记忆，衰减速度减半。",
+    "type": "float",
+    "default": 0.5
+  },
+  "access_window_days": {
+    "description": "访问强化窗口（天）",
+    "hint": "在这个窗口内被访问过才算“常用”。",
+    "type": "int",
+    "default": 30
+  },
+  "archive_protect_days": {
+    "description": "归档保护期（天）",
+    "hint": "最近这么多天内被访问过的记忆不会被归档。",
+    "type": "int",
+    "default": 30
+  },
+  "archive_keep_days": {
+    "description": "归档保留天数",
+    "hint": "归档超过这么多天就彻底删除，控制库大小。默认 180。",
+    "type": "int",
+    "default": 180
+  },
+  "abstract_enabled": {
+    "description": "事件沉淀成事实",
+    "hint": "每天从流水账里抽长期有效的事实/偏好，存成 kind=fact。",
+    "type": "bool",
+    "default": true
+  },
+  "abstract_max_facts": {
+    "description": "每天最多几条事实",
+    "hint": "默认 5，防止一天抽太多。",
+    "type": "int",
+    "default": 5
+  },
+  "rerank": {
+    "description": "本地重排",
+    "hint": "按查询意图给事实/事件加权并去重，不调用模型。",
+    "type": "bool",
+    "default": true
+  },
+  "inject_style": {
+    "description": "注入真人语感",
+    "hint": "统计最近真人消息的句长/标点/语气词，作为说话参考。不调模型。",
+    "type": "bool",
+    "default": true
+  },
+  "style_sample_size": {
+    "description": "语感样本条数",
+    "hint": "取最近多少条真人消息做统计，默认 300。",
+    "type": "int",
+    "default": 300
+  },
+  "style_in_group": {
+    "description": "群里也注入语感块",
+    "hint": "默认关闭：群里用自己的语感，避免把私聊说法带进群。",
+    "type": "bool",
+    "default": false
+  },
+  "procedural_enabled": {
+    "description": "程序记忆",
+    "hint": "用户确认完成后，把这次做法整理成可复用的步骤。",
+    "type": "bool",
+    "default": true
+  },
+  "multimodal_enabled": {
+    "description": "图片记忆",
+    "hint": "对方发图时让视觉模型写一句话存进记忆。",
+    "type": "bool",
+    "default": true
+  },
+  "multimodal_in_group": {
+    "description": "群里的图也记",
+    "hint": "默认关闭，避免群图太多、太费钱。",
+    "type": "bool",
+    "default": false
+  },
+  "multimodal_max_per_day": {
+    "description": "每天最多记几张图",
+    "hint": "默认 10 张，防止图片多的时候失控。",
+    "type": "int",
+    "default": 10
+  },
+  "recall_k_group": {
+    "description": "群聊检索条数",
+    "hint": "群聊默认只取 1 条，控制 token。",
+    "type": "int",
+    "default": 1
+  },
+  "recall_min_score_group": {
+    "description": "群聊检索门槛",
+    "hint": "群聊比私聊更严，默认 0.45。",
+    "type": "float",
+    "default": 0.45
+  },
+  "inject_speaker": {
+    "description": "群聊标注说话人",
+    "hint": "群聊里注入当前说话人和其他人，避免认错人。",
+    "type": "bool",
+    "default": true
+  },
+  "voice_enabled": {
+    "description": "语音记忆",
+    "hint": "收到语音时本地转文字，存进记忆并让这一轮能接话。",
+    "type": "bool",
+    "default": true
+  },
+  "voice_model": {
+    "description": "whisper 模型大小",
+    "hint": "base 快、small 准；默认 small（约 460MB，首次自动下载）。",
+    "type": "string",
+    "default": "small"
+  },
+  "video_enabled": {
+    "description": "视频记忆",
+    "hint": "收到视频时抽几帧描述 + 转写音轨，存成记忆。",
+    "type": "bool",
+    "default": true
+  },
+  "video_max_per_day": {
+    "description": "每天最多记几段视频",
+    "hint": "默认 5 段，防止视频多时失控。",
+    "type": "int",
+    "default": 5
+  },
+  "lessons_enabled": {
+    "description": "提炼道理",
+    "hint": "每天从笔记和看过的内容里抽 2-3 条可照着做的道理。",
+    "type": "bool",
+    "default": true
+  }
+}

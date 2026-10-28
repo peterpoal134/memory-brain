@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>角色状态与情绪</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#ffffff; --fg:#1f2430; --muted:#6b7280;
+    --line:#e5e7ef; --accent:#5b7cfa; --accent-soft:#eef1ff;
+    --good:#22a06b; --warn:#d98a1a; --bad:#d64545;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14161c; --card:#1c1f27; --fg:#e7e9f0; --muted:#9aa1b2;
+      --line:#2a2e3a; --accent:#7c93ff; --accent-soft:#232842;
+      --good:#3ecf8e; --warn:#e5a53c; --bad:#ff6b6b;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.55}
+  .wrap{max-width:1080px;margin:0 auto;padding:18px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+  h1{font-size:18px;margin:0;font-weight:700}
+  .sub{color:var(--muted);font-size:12px}
+  .grow{flex:1}
+  button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+    background:var(--card);color:var(--fg);padding:5px 12px}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.ghost{background:transparent}
+  button.danger{color:var(--bad);border-color:var(--line)}
+  button:disabled{opacity:.5;cursor:default}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+  .val{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+  .val small{font-size:12px;color:var(--muted);font-weight:400;margin-left:4px}
+  .lab{color:var(--muted);font-size:12px;margin-top:-2px}
+  input[type=range]{width:100%;accent-color:var(--accent);margin-top:10px}
+  .row{display:flex;align-items:center;gap:8px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  tr:last-child td{border-bottom:none}
+  .bar{height:6px;border-radius:99px;background:var(--line);overflow:hidden;min-width:70px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;background:var(--accent-soft);color:var(--accent)}
+  .pill.gray{background:var(--line);color:var(--muted)}
+  .item{padding:9px 0;border-bottom:1px solid var(--line)}
+  .item:last-child{border-bottom:none}
+  .meta{color:var(--muted);font-size:12px;margin-top:2px}
+  .text{word-break:break-word}
+  .num{width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--fg)}
+  .add{display:flex;gap:8px;margin-top:10px}
+  .add input{flex:1;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg)}
+  .empty{color:var(--muted);font-size:13px;padding:8px 0}
+  .toast{position:fixed;right:18px;bottom:18px;background:var(--card);border:1px solid var(--line);
+    padding:8px 14px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);opacity:0;transition:.2s}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>角色状态与情绪</h1>
+      <div class="sub" id="sub">加载中…</div>
+    </div>
+    <div class="grow"></div>
+    <button class="ghost" id="refresh">刷新</button>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>心情</h2>
+      <div class="val" id="v-valence">–<small>/100</small></div>
+      <div class="lab" id="l-valence">&nbsp;</div>
+      <input type="range" id="s-valence" min="-100" max="100" step="1" />
+    </div>
+    <div class="card">
+      <h2>精力</h2>
+      <div class="val" id="v-energy">–<small>/100</small></div>
+      <div class="lab" id="l-energy">&nbsp;</div>
+      <input type="range" id="s-energy" min="0" max="100" step="1" />
+    </div>
+    <div class="card">
+      <h2>黏人</h2>
+      <div class="val" id="v-cling">–<small>/100</small></div>
+      <div class="lab" id="l-cling">&nbsp;</div>
+      <input type="range" id="s-cling" min="0" max="100" step="1" />
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>好感度 <span class="sub" id="user-count"></span></h2>
+    <table>
+      <thead><tr><th>对象</th><th>分数</th><th style="width:120px">进度</th><th>等级</th><th>聊过</th><th style="width:120px">操作</th></tr></thead>
+      <tbody id="affinity-body"><tr><td colspan="6" class="empty">还没有数据</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>旧账 <span class="sub" id="grudge-count"></span></h2>
+    <div id="grudge-list"><div class="empty">没有压着的事</div></div>
+  </div>
+
+  <div class="card">
+    <h2>识海 <span class="sub" id="core-count"></span></h2>
+    <div id="core-list"><div class="empty">空</div></div>
+    <div class="add">
+      <input id="core-input" placeholder="写一条永远不能忘的事…" maxlength="300" />
+      <button class="primary" id="core-add">写入</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  // 页面桥的脚本由 AstrBot 注入在页面末尾，要等它出现
+  var view = null;
+
+  function bridgeNow() {
+    return window.AstrBotPluginView || window.AstrBotPluginPage || null;
+  }
+
+  async function waitBridge(timeoutMs) {
+    var deadline = Date.now() + (timeoutMs || 8000);
+    while (Date.now() < deadline) {
+      var b = bridgeNow();
+      if (b) return b;
+      await new Promise(function (r) { setTimeout(r, 60); });
+    }
+    return null;
+  }
+  var state = { mood: null };
+
+  function toast(msg) {
+    var el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t = setTimeout(function () { el.classList.remove('show'); }, 1600);
+  }
+
+  async function call(path, body) {
+    if (!view) throw new Error('页面桥未加载，请从 AstrBot 面板打开');
+    var res = body ? await view.apiPost(path, body) : await view.apiGet(path, {});
+    if (res && res.status === 'ok') return res.data;
+    if (res && res.status === 'error') throw new Error(res.message || '请求失败');
+    return res;
+  }
+
+  function pct(v, min, max) {
+    return Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
+  }
+
+  function renderMood(m) {
+    state.mood = m;
+    document.getElementById('v-valence').innerHTML = Math.round(m.valence) + '<small>/100</small>';
+    document.getElementById('v-energy').innerHTML = Math.round(m.energy) + '<small>/100</small>';
+    document.getElementById('v-cling').innerHTML = Math.round(m.clinginess) + '<small>/100</small>';
+    document.getElementById('l-valence').textContent = m.labels.valence;
+    document.getElementById('l-energy').textContent = m.labels.energy;
+    document.getElementById('l-cling').textContent = m.labels.clinginess;
+    document.getElementById('s-valence').value = Math.round(m.valence);
+    document.getElementById('s-energy').value = Math.round(m.energy);
+    document.getElementById('s-cling').value = Math.round(m.clinginess);
+  }
+
+  var timer = {};
+  function bindSlider(id, key) {
+    var el = document.getElementById(id);
+    el.addEventListener('input', function () {
+      var map = { valence: ['v-valence'], energy: ['v-energy'], clinginess: ['v-cling'] };
+      document.getElementById(map[key][0]).innerHTML = el.value + '<small>/100</small>';
+      clearTimeout(timer[key]);
+      timer[key] = setTimeout(async function () {
+        var body = {};
+        body[key] = Number(el.value);
+        try { await call('page/mood', body); toast('已更新'); } catch (e) { toast(e.message); }
+      }, 350);
+    });
+  }
+  bindSlider('s-valence', 'valence');
+  bindSlider('s-energy', 'energy');
+  bindSlider('s-cling', 'clinginess');
+
+  function renderAffinity(list) {
+    var body = document.getElementById('affinity-body');
+    document.getElementById('user-count').textContent = '（' + list.length + ' 人）';
+    if (!list.length) {
+      body.innerHTML = '<tr><td colspan="6" class="empty">还没有数据</td></tr>';
+      return;
+    }
+    body.innerHTML = '';
+    list.forEach(function (u) {
+      var tr = document.createElement('tr');
+      var score = u.score;
+      tr.innerHTML =
+        '<td class="text"></td>' +
+        '<td><input class="num" type="number" min="0" max="100" step="1" value="' + Math.round(score) + '"></td>' +
+        '<td><div class="bar"><i style="width:' + pct(score, 0, 100) + '%"></i></div></td>' +
+        '<td><span class="pill">' + u.level + '</span></td>' +
+        '<td>' + u.msgs + '</td>' +
+        '<td><button class="ghost save">保存</button> <button class="danger del">删除</button></td>';
+      tr.querySelector('.text').textContent = u.name + '（' + u.id + '）';
+      tr.querySelector('.save').onclick = async function () {
+        var v = Number(tr.querySelector('input').value);
+        try { await call('page/affinity/set', { user_id: u.id, score: v }); toast('已保存'); refresh(); }
+        catch (e) { toast(e.message); }
+      };
+      tr.querySelector('.del').onclick = async function () {
+        if (!confirm('删除 ' + u.name + ' 的好感记录？')) return;
+        try { await call('page/affinity/delete', { user_id: u.id }); toast('已删除'); refresh(); }
+        catch (e) { toast(e.message); }
+      };
+      body.appendChild(tr);
+    });
+  }
+
+  function renderGrudges(data) {
+    var list = data.events || [];
+    var box = document.getElementById('grudge-list');
+    var open = list.filter(function (e) { return !e.resolved; }).length;
+    document.getElementById('grudge-count').textContent = '（' + open + ' 条未放下 / 共 ' + list.length + ' 条）';
+    if (!list.length) { box.innerHTML = '<div class="empty">没有压着的事</div>'; return; }
+    box.innerHTML = '';
+    list.forEach(function (e) {
+      var div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML =
+        '<div class="row"><span class="pill' + (e.resolved ? ' gray' : '') + '">' + e.emotion + '</span>' +
+        '<span class="meta">' + e.date + ' · ' + (e.user_name || e.user_id) + ' · ' + e.delta + ' · 翻过 ' + e.recalls + ' 次</span>' +
+        '<span class="grow"></span></div>' +
+        '<div class="text" style="margin-top:4px"></div>' +
+        '<div class="row" style="margin-top:6px">' +
+        (e.resolved ? '' : '<button class="ghost resolve">放下</button>') +
+        '<button class="danger del">删除</button></div>';
+      div.querySelector('.text').textContent = e.text;
+      var resolve = div.querySelector('.resolve');
+      if (resolve) resolve.onclick = async function () {
+        try { await call('page/grudge/resolve', { id: e.id }); toast('放下了'); refresh(); }
+        catch (err) { toast(err.message); }
+      };
+      div.querySelector('.del').onclick = async function () {
+        if (!confirm('删除这条旧账？')) return;
+        try { await call('page/grudge/delete', { id: e.id }); toast('已删除'); refresh(); }
+        catch (err) { toast(err.message); }
+      };
+      box.appendChild(div);
+    });
+  }
+
+  function renderCore(data) {
+    var list = data.entries || [];
+    document.getElementById('core-count').textContent = '（' + list.length + ' 条，永不遗忘）';
+    var box = document.getElementById('core-list');
+    if (!list.length) { box.innerHTML = '<div class="empty">空</div>'; return; }
+    box.innerHTML = '';
+    list.forEach(function (e) {
+      var div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML =
+        '<div class="text"></div>' +
+        '<div class="row" style="margin-top:4px"><span class="meta">#' + e.id + ' · ' + e.date + ' · ' + e.by + '</span>' +
+        '<span class="grow"></span><button class="danger del">删除</button></div>';
+      div.querySelector('.text').textContent = e.text;
+      div.querySelector('.del').onclick = async function () {
+        if (!confirm('从识海删除？')) return;
+        try { await call('page/core/delete', { id: e.id }); toast('已删除'); refresh(); }
+        catch (err) { toast(err.message); }
+      };
+      box.appendChild(div);
+    });
+  }
+
+  async function refresh() {
+    try {
+      var results = await Promise.all([
+        call('page/state', null),
+        call('page/grudges', null),
+        call('page/core', null)
+      ]);
+      renderMood(results[0].mood);
+      renderAffinity(results[0].affinity || []);
+      renderGrudges(results[1]);
+      renderCore(results[2]);
+      var c = results[0].counts || {};
+      document.getElementById('sub').textContent =
+        '旧账 ' + (c.grudges || 0) + ' 条 · 识海 ' + (c.core || 0) + ' 条 · 记仇度 ' +
+        Math.round((results[0].config || {}).grudge || 45);
+    } catch (e) {
+      document.getElementById('sub').textContent = '加载失败：' + e.message;
+    }
+  }
+
+  document.getElementById('refresh').onclick = refresh;
+  document.getElementById('core-add').onclick = async function () {
+    var input = document.getElementById('core-input');
+    var text = input.value.trim();
+    if (!text) return;
+    try {
+      await call('page/core/add', { text: text });
+      input.value = '';
+      toast('写进去了');
+      refresh();
+    } catch (e) { toast(e.message); }
+  };
+
+  (async function boot() {
+    view = await waitBridge();
+    if (!view) {
+      document.getElementById('sub').textContent =
+        '页面桥没有加载：刷新一下面板，或从「插件 → 角色状态与情绪」重新进入。';
+      return;
+    }
+    try {
+      if (typeof view.ready === 'function') await view.ready();
+    } catch (e) { /* 老版本没有 ready */ }
+    refresh();
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+name: astrbot_plugin_memory_brain
+display_name: 记忆大脑
+desc: 自研长期记忆：分类型存储、混合检索（语义+关键词+重要性+时间+图谱）、渐进遗忘
+version: v0.1.0
+author: memory-brain
+support_platforms:
+  - aiocqhttp
+pages:
+  - panel
