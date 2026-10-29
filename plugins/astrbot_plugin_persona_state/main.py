@@ -31,6 +31,7 @@ from .core_state import (
     affinity_view,
     apply_message,
     clamp,
+    decay_mood,
     default_affinity,
     default_mood,
     mood_labels,
@@ -240,6 +241,9 @@ class PersonaStatePlugin(Star):
         name = (event.get_sender_name() or "").strip()[:24]
 
         self._record_energy(now)
+        # 先结算“沉默期间的自然衰减”，再取基准值；否则昨晚到今早的衰减
+        # 会被算成“这条消息让她掉了 30 点心情”，误记成委屈/旧账。
+        self.mood.data = decay_mood(self.mood.data, now)
         before = float(self.mood.data.get("valence", 10))
         self.mood.data = apply_message(self.mood.data, now, text, is_group=is_group)
         try:

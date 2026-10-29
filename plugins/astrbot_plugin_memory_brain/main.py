@@ -1298,7 +1298,14 @@ class MemoryBrainPlugin(Star):
                 importance=float(item["importance"]),
                 source="abstract",
                 visibility=vis,
-                meta={"source_ids": source_ids, "date": day_label},
+                meta={
+                    "source_ids": source_ids,
+                    "date": day_label,
+                    "session": str(episodes[0].get("source") or ""),
+                    "subject": (item["entities"][0]["name"] if item.get("entities") else ""),
+                    "abstracted_at": now,
+                    "abstracted_by": "auto",
+                },
                 entities=[(e["name"], e["type"]) for e in item["entities"]],
                 vector=vec,
             )
