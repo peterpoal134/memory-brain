@@ -31,7 +31,7 @@ DB = os.environ.get("MEMORY_DB", str(Path.home() / ".memory_core" / "brain.db"))
 HOST = os.environ.get("MEMORY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MEMORY_PORT", "8780"))
 TOKEN = os.environ.get("MEMORY_TOKEN", "")
-EMBED_URL = os.environ.get("MEMORY_EMBED_URL", "http://127.0.0.1:11434/api/embed")
+EMBED_URL = os.environ.get("MEMORY_EMBED_URL", "")
 EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "bge-m3")
 LLM_BASE = os.environ.get("MEMORY_LLM_BASE", "").rstrip("/")
 LLM_KEY = os.environ.get("MEMORY_LLM_KEY", "")
@@ -39,16 +39,23 @@ LLM_MODEL = os.environ.get("MEMORY_LLM_MODEL", "deepseek-chat")
 AUTO_REMEMBER = os.environ.get("MEMORY_AUTO_REMEMBER", "0") == "1"
 
 
+_EMBED_DOWN_UNTIL = 0.0
+
+
 def _embed(text: str):
+    global _EMBED_DOWN_UNTIL
+    if not EMBED_URL or time.time() < _EMBED_DOWN_UNTIL:
+        return None
     try:
         body = json.dumps({"model": EMBED_MODEL, "input": text}).encode()
         req = urllib.request.Request(
             EMBED_URL, data=body, headers={"Content-Type": "application/json"}, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=5) as r:
             d = json.loads(r.read().decode())
         return np.asarray((d.get("embeddings") or [d["embedding"]])[0], dtype=np.float32)
     except Exception:
+        _EMBED_DOWN_UNTIL = time.time() + 300
         return None
 
 
@@ -220,10 +227,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/v1/chat/completions":
+                out = service().chat(data)
                 if data.get("stream"):
-                    self._send(400, {"status": "error", "message": "stream 暂不支持"})
+                    text = ""
+                    try:
+                        text = out["choices"][0]["message"]["content"]
+                    except Exception:
+                        pass
+                    chunk = {"id": out.get("id", "chatcmpl"), "object": "chat.completion.chunk",
+                             "created": out.get("created", int(time.time())), "model": out.get("model", "memory-core"),
+                             "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]}
+                    done = {"id": out.get("id", "chatcmpl"), "object": "chat.completion.chunk",
+                            "created": out.get("created", int(time.time())), "model": out.get("model", "memory-core"),
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                    body = ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n" +
+                            "data: " + json.dumps(done, ensure_ascii=False) + "\n\ndata: [DONE]\n\n").encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(body)
                 else:
-                    self._send(200, service().chat(data))
+                    self._send(200, out)
             elif self.path == "/remember":
                 self._send(200, {"status": "ok", "data": service().remember(data)})
             elif self.path == "/recall":

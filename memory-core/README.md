@@ -25,7 +25,9 @@ MEMORY_EMBED_URL=http://127.0.0.1:11434/api/embed \
 python -m memory_core.server
 ```
 
-默认监听 `127.0.0.1:8780`。没配 embedding 也能跑，退化为关键词 + 图谱 + 重要性。
+默认监听 `127.0.0.1:8780`。
+
+没配 `MEMORY_EMBED_URL` 就只用关键词 + 图谱 + 重要性，启动和召回都是毫秒级；配了 Ollama bge-m3 才走向量。
 
 ## 接口
 

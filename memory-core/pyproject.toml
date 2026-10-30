@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-core"
+version = "0.1.0"
+description = "Standalone memory service for chat agents (SQLite + hybrid recall + HTTP)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.scripts]
+memory-core = "memory_core.server:main"
+
+[tool.setuptools.packages.find]
+include = ["memory_core*"]
