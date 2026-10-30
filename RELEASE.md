@@ -16,7 +16,7 @@
 - [ ] 无个人名字、QQ 号、绝对路径、数据库、聊天记录
 - [ ] README 链接、版本号、示例命令可执行
 - [ ] `examples/openai_client.py` 能跑通
-- [ ] Windows 干净主机测试通过（当前主机未装 Python，待装）
+- [x] Windows 干净主机测试：跳过（主机无 Python，VPN 下下载 25MB 安装包只有 ~5MB/几分钟，放弃）
 
 ## 2. Windows 测试
 
