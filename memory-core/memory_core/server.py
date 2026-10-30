@@ -165,8 +165,7 @@ class MemoryService:
         s["avg_importance"] = round(self.engine._avg_importance(), 3)
         return s
 
-    def chat(self, data: dict) -> dict:
-        """OpenAI 兼容入口：自动召回并拼进 system，再转发给上游模型。"""
+    def _chat_payload(self, data: dict) -> dict:
         if not LLM_BASE:
             raise RuntimeError("没有配置 MEMORY_LLM_BASE")
         msgs = list(data.get("messages") or [])
@@ -197,6 +196,15 @@ class MemoryService:
             payload["max_tokens"] = int(data["max_tokens"])
         elif data.get("max_completion_tokens"):
             payload["max_tokens"] = int(data["max_completion_tokens"])
+        return payload
+
+    def chat(self, data: dict) -> dict:
+        """OpenAI 兼容入口：自动召回并拼进 system，再转发给上游模型。"""
+        payload = self._chat_payload(data)
+        user = ""
+        for m in payload["messages"]:
+            if m.get("role") == "user":
+                user = str(m.get("content") or "")
         req = urllib.request.Request(
             LLM_BASE + "/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode(),
@@ -211,6 +219,33 @@ class MemoryService:
             except Exception:
                 pass
         return out
+
+    def stream_chat(self, data: dict):
+        """真流式：把上游 SSE 逐块转给客户端。"""
+        from http.client import HTTPConnection, HTTPSConnection
+        from urllib.parse import urlparse
+
+        payload = self._chat_payload(data)
+        payload["stream"] = True
+        u = urlparse(LLM_BASE + "/chat/completions")
+        cls = HTTPSConnection if u.scheme == "https" else HTTPConnection
+        conn = cls(u.hostname, u.port or (443 if u.scheme == "https" else 80), timeout=180)
+        path = u.path + (("?" + u.query) if u.query else "")
+        conn.request("POST", path, json.dumps(payload, ensure_ascii=False).encode(),
+                     {"Content-Type": "application/json", "Authorization": f"Bearer {LLM_KEY}"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            body = resp.read().decode(errors="replace")
+            conn.close()
+            raise RuntimeError(f"upstream {resp.status}: {body[:200]}")
+        try:
+            while True:
+                chunk = resp.read(2048)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            conn.close()
 
     @_locked
     def report(self) -> str:
@@ -320,38 +355,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/v1/chat/completions":
-                out = service().chat(data)
                 if data.get("stream"):
-                    text = ""
                     try:
-                        text = out["choices"][0]["message"]["content"]
-                    except Exception:
+                        gen = service().stream_chat(data)
+                        first = next(gen)
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_header("Connection", "close")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.close_connection = True
+                        if first:
+                            self.wfile.write(first)
+                        for chunk in gen:
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                        self.wfile.flush()
+                    except StopIteration:
                         pass
-                    delta = {"role": "assistant"}
-                    if text:
-                        delta["content"] = text
-                    try:
-                        if out["choices"][0]["message"].get("tool_calls"):
-                            delta["tool_calls"] = out["choices"][0]["message"]["tool_calls"]
-                    except Exception:
-                        pass
-                    chunk = {"id": out.get("id", "chatcmpl"), "object": "chat.completion.chunk",
-                             "created": out.get("created", int(time.time())), "model": out.get("model", "memory-core"),
-                             "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
-                    done = {"id": out.get("id", "chatcmpl"), "object": "chat.completion.chunk",
-                            "created": out.get("created", int(time.time())), "model": out.get("model", "memory-core"),
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-                    body = ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n" +
-                            "data: " + json.dumps(done, ensure_ascii=False) + "\n\ndata: [DONE]\n\n").encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
-                    self.wfile.write(body)
+                    except Exception as exc:
+                        try:
+                            self._send(500, {"status": "error", "message": str(exc)})
+                        except Exception:
+                            pass
                 else:
-                    self._send(200, out)
+                    self._send(200, service().chat(data))
             elif self.path == "/remember":
                 self._send(200, {"status": "ok", "data": service().remember(data)})
             elif self.path == "/recall":
