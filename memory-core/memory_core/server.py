@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 
+from .agent import AgentService
 from .engine import MemoryEngine
 from .store import Store
 
@@ -174,7 +175,7 @@ class MemoryService:
             if m.get("role") == "user":
                 user = str(m.get("content") or "")
                 break
-        block = self.recall({"query": user, "k": 5}).get("block") if user else ""
+        block = "" if data.get("_skip_recall") else (self.recall({"query": user, "k": 5}).get("block") if user else "")
         if block:
             memory_system = "以下是你记得的旧事，用来接话，不要逐条复述：\n" + block
             if msgs and msgs[0].get("role") == "system":
@@ -272,6 +273,7 @@ class MemoryService:
 
 
 SERVICE: MemoryService | None = None
+AGENT: AgentService | None = None
 
 
 def service() -> MemoryService:
@@ -279,6 +281,13 @@ def service() -> MemoryService:
     if SERVICE is None:
         SERVICE = MemoryService()
     return SERVICE
+
+
+def agent() -> AgentService:
+    global AGENT
+    if AGENT is None:
+        AGENT = AgentService(service(), os.environ.get("AGENT_CONFIG"))
+    return AGENT
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -325,6 +334,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"status": "ok", "data": service().graph()})
             except Exception as exc:
                 self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path.startswith("/agent/state"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                self._send(200, {"status": "ok", "data": agent().state(str((q.get("user_id") or ["default"])[0]))})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path == "/agent/config":
+            try:
+                c = agent().cfg
+                self._send(200, {"status": "ok", "data": {"name": (c.get("character") or {}).get("name"),
+                                                          "emotion_rules": [r.get("label") for r in (c.get("emotion") or {}).get("rules") or []]}})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
         elif self.path == "/v1/models":
             self._send(200, {"object": "list", "data": [{"id": "memory-core", "object": "model"}]})
         elif self.path == "/health":
@@ -354,7 +377,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
-            if self.path == "/v1/chat/completions":
+            if self.path == "/agent/chat":
+                self._send(200, {"status": "ok", "data": agent().chat(data)})
+            elif self.path == "/v1/chat/completions":
                 if data.get("stream"):
                     try:
                         gen = service().stream_chat(data)
