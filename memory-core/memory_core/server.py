@@ -138,8 +138,14 @@ class MemoryService:
             "messages": msgs,
             "temperature": data.get("temperature", 0.7),
         }
+        for key in ("top_p", "stop", "presence_penalty", "frequency_penalty",
+                    "response_format", "seed", "tools", "tool_choice", "parallel_tool_calls"):
+            if key in data:
+                payload[key] = data[key]
         if data.get("max_tokens"):
             payload["max_tokens"] = int(data["max_tokens"])
+        elif data.get("max_completion_tokens"):
+            payload["max_tokens"] = int(data["max_completion_tokens"])
         req = urllib.request.Request(
             LLM_BASE + "/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode(),
