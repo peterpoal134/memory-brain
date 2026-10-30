@@ -105,6 +105,20 @@ api_key  = local-token
 model    = memory-core
 ```
 
+默认只加记忆。要在同一个入口上叠加人格/情绪，启动时加：
+
+```bash
+MEMORY_AGENT=1 AGENT_CONFIG=./config.example.json ...
+```
+
+或者直接用专用路径：
+
+```
+POST /v1/agent/chat/completions
+```
+
+它接受 OpenAI 格式，返回里多一个 `agent_state`。
+
 每次请求会：
 
 1. 取最后一条用户消息召回记忆

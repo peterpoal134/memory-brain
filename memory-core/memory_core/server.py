@@ -290,6 +290,24 @@ def agent() -> AgentService:
     return AGENT
 
 
+def openai_agent(data: dict) -> dict:
+    msgs = data.get("messages") or []
+    text = ""
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            text = str(m.get("content") or "")
+            break
+    uid = str(data.get("user") or "default")
+    out = agent().chat({"message": text, "user_id": uid,
+                        "session_id": str(data.get("session_id") or ""),
+                        "model": data.get("model"), "temperature": data.get("temperature", 0.7),
+                        "max_tokens": data.get("max_tokens")})
+    return {"id": "chatcmpl-agent", "object": "chat.completion", "created": int(time.time()),
+            "model": data.get("model") or "agent-core",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": out["reply"]}, "finish_reason": "stop"}],
+            "agent_state": out.get("state")}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -377,10 +395,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
-            if self.path == "/agent/chat":
+            if self.path == "/v1/agent/chat/completions":
+                self._send(200, openai_agent(data))
+            elif self.path == "/agent/chat":
                 self._send(200, {"status": "ok", "data": agent().chat(data)})
             elif self.path == "/v1/chat/completions":
-                if data.get("stream"):
+                if os.environ.get("MEMORY_AGENT") == "1":
+                    out = openai_agent(data)
+                    if data.get("stream"):
+                        c = out["choices"][0]["message"]["content"]
+                        chunk = {"id": out["id"], "object": "chat.completion.chunk", "created": out["created"],
+                                 "model": out["model"], "choices": [{"index": 0, "delta": {"role": "assistant", "content": c}, "finish_reason": None}]}
+                        body = ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\ndata: [DONE]\n\n").encode()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self._send(200, out)
+                elif data.get("stream"):
                     try:
                         gen = service().stream_chat(data)
                         first = next(gen)
