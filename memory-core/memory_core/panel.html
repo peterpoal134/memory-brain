@@ -163,6 +163,7 @@
     if(!(d.results||[]).length)list.innerHTML='<div style="color:#7f9aab;font-size:12px">还没有评估集，先在下面加一条。</div>';
   }
   document.getElementById('evalBtn').onclick=showEval;
+  if(location.hash==='#eval')setTimeout(showEval,300);
   document.getElementById('evalClose').onclick=function(){document.getElementById('evalView').hidden=true};
   document.getElementById('evalRun').onclick=async function(){
     this.disabled=true;this.textContent='跑…';
