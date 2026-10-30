@@ -197,6 +197,26 @@ class MemoryService:
         } for r in rows]
         return {"nodes": nodes, "edges": edges, "memories": memories}
 
+    def complete(self, prompt: str, system: str = "", max_tokens: int = 500) -> str:
+        if not LLM_BASE:
+            return ""
+        payload = {
+            "model": LLM_MODEL,
+            "messages": ([{"role": "system", "content": system}] if system else []) +
+                        [{"role": "user", "content": str(prompt or "")[:16000]}],
+            "temperature": 0.3,
+            "max_tokens": int(max_tokens),
+        }
+        req = urllib.request.Request(
+            LLM_BASE + "/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {LLM_KEY}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            out = json.loads(r.read().decode())
+        return str(out["choices"][0]["message"]["content"] or "")
+
     def summarize(self, text: str) -> str:
         """用上游模型压缩一段旧对话；不注入记忆，避免递归。"""
         if not LLM_BASE:
@@ -260,6 +280,12 @@ class MemoryService:
             "visibility": vis, "source": "chat_batch",
             "meta": {"session": sid, "count": len(rows)},
         })
+        if os.environ.get("MEMORY_DIGEST", "1") == "1" and LLM_BASE:
+            try:
+                from .digest import DigestService
+                DigestService(self).extract(summary, visibility=vis, source="digest")
+            except Exception:
+                pass
         self.store.conn.execute(
             "INSERT INTO chat_batch_state(session,last_id) VALUES(?,?) "
             "ON CONFLICT(session) DO UPDATE SET last_id=excluded.last_id",
@@ -615,7 +641,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
-            if self.path == "/eval/run":
+            if self.path == "/digest/extract":
+                from .digest import DigestService
+                self._send(200, {"status": "ok", "data": DigestService(service()).extract(str(data.get("text") or ""), str(data.get("visibility") or "private"))})
+            elif self.path == "/digest/reflect":
+                from .digest import DigestService
+                self._send(200, {"status": "ok", "data": DigestService(service()).reflect(data.get("date"), str(data.get("visibility") or "private"))})
+            elif self.path == "/digest/profile":
+                from .digest import DigestService
+                self._send(200, {"status": "ok", "data": DigestService(service()).profile(str(data.get("name") or ""), str(data.get("visibility") or "private"))})
+            elif self.path == "/eval/run":
                 self._send(200, {"status": "ok", "data": eval_service().run()})
             elif self.path == "/eval/query":
                 self._send(200, {"status": "ok", "data": eval_service().add_query(data)})
