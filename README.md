@@ -5,6 +5,17 @@
 
 ![架构](docs/框架.png)
 
+## 两种用法
+
+- **AstrBot 用户**：装 `plugins/` 下的插件，得到完整角色（记忆、情绪、生活层、面板）
+- **qqbridge / DSH 等非 AstrBot 平台**：用 [`memory-core/`](memory-core/README.md)，独立记忆服务 + 人格情绪 + 3D 面板
+
+接入文档：
+
+- [AstrBot](docs/astrbot.md)
+- [qqbridge](memory-core/docs/qqbridge.md)
+- [DSH](memory-core/docs/dsh.md)
+
 ## 它解决什么
 
 普通机器人聊完就忘。这里做了五件事：
