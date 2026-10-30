@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>记忆大脑 · memory-core</title>
+<style>
+  :root{--bg:#05090f;--fg:#e8f6ff;--mut:#7f9aab;--cyan:#00e5ff;--line:rgba(0,229,255,.15)}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden}
+  #c{position:fixed;inset:0;width:100%;height:100%;cursor:grab}
+  #c.drag{cursor:grabbing}
+  header{position:fixed;left:14px;right:14px;top:12px;display:flex;gap:10px;align-items:center;z-index:5;pointer-events:none}
+  header h1{font-size:15px;margin:0;letter-spacing:.12em;color:#bff8ff;font-weight:600}
+  #stats{font-size:11px;color:var(--mut);font-family:ui-monospace,Menlo,monospace}
+  #legend{position:fixed;left:14px;top:44px;display:flex;gap:12px;font-size:10px;color:var(--mut);z-index:5;font-family:ui-monospace,Menlo,monospace}
+  #legend i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px;box-shadow:0 0 6px currentColor}
+  #hint{position:fixed;left:14px;bottom:12px;font-size:10px;color:var(--mut);z-index:5;font-family:ui-monospace,Menlo,monospace;opacity:.75}
+  #tip{position:fixed;z-index:8;padding:4px 8px;border:1px solid rgba(0,229,255,.5);background:rgba(4,10,16,.9);
+    color:#dffcff;font:600 11px ui-monospace,Menlo,monospace;pointer-events:none;display:none;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #auth{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:20;background:rgba(3,7,12,.88)}
+  #auth .box{width:300px;border:1px solid var(--line);border-radius:10px;padding:16px;background:#0a1520}
+  #auth h2{font-size:14px;margin:0 0 8px}
+  #auth input{width:100%;padding:8px;border-radius:6px;border:1px solid #28485e;background:#071019;color:var(--fg)}
+  #auth button{margin-top:8px;width:100%;padding:8px;border-radius:6px;border:1px solid rgba(0,229,255,.5);background:rgba(0,229,255,.14);color:#bff8ff;cursor:pointer}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header><h1>记忆大脑</h1><div id="stats">加载中…</div></header>
+<div id="legend"></div>
+<div id="hint">拖拽旋转 · 滚轮缩放 · 悬停看节点 · memory-core</div>
+<div id="tip"></div>
+<div id="auth"><div class="box"><h2>需要访问令牌</h2><input id="token" placeholder="MEMORY_TOKEN" /><button id="go">进入</button></div></div>
+<script>
+(function(){
+  var canvas=document.getElementById('c'), ctx=canvas.getContext('2d');
+  var W=0,H=0,DPR=window.devicePixelRatio||1;
+  var nodes=[],edges=[],core={id:-1,name:'大脑',type:'core',x:0,y:0,z:0,r:10};
+  var yaw=.35,pitch=-.18,zoom=1.55,panX=0,panY=0,drag=false,lx=0,ly=0,hover=null;
+  var stars=[],pulses=[],sparkles=[],last=0;
+  var COL={core:'#eafcff',person:'#00e5ff',place:'#39ff8f',thing:'#ffb020',topic:'#b967ff',skill:'#ff3d81'};
+  var KIND={episode:'#4fd6ff',fact:'#ffd166',reflection:'#ffb347',preference:'#9dff8f',skill:'#ff7fd0',relation:'#b18cff'};
+  function token(){return localStorage.getItem('memory_token')||''}
+  function resize(){W=innerWidth;H=innerHeight;canvas.width=W*DPR;canvas.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);makeStars()}
+  function makeStars(){stars=[];var n=Math.min(240,Math.round(W*H/5200));for(var i=0;i<n;i++)stars.push({x:Math.random()*W,y:Math.random()*H,r:Math.random()<.85?.7:1.4,a:.15+Math.random()*.45,sp:.4+Math.random()*1.2,ph:Math.random()*6.28})}
+  function project(p){var cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);var x=p.x*cy-p.z*sy;var z=p.x*sy+p.z*cy;var y=p.y*cp-z*sp;z=p.y*sp+z*cp;var f=620,s=f/(f+z+420);return{x:W/2+panX+x*s*zoom,y:H/2+panY+y*s*zoom,s:s*zoom,z:z}}
+  function dir(i,n){var ga=Math.PI*(3-Math.sqrt(5));var y=1-(i/(n-1||1))*2;var r=Math.sqrt(Math.max(0,1-y*y));var th=i*ga;return[Math.cos(th)*r,y,Math.sin(th)*r]}
+  var CL=['person','topic','thing','place','skill'],DIRS=[[0,1,0],[1,0,0],[-.5,0,.866],[0,-1,0],[-.5,0,-.866]];
+  function layout(){
+    nodes.forEach(function(n){if(n.type==='core'){n.x=n.y=n.z=0;return}});
+    var byType={};CL.forEach(function(t){byType[t]=[]});
+    nodes.forEach(function(n){if(n.type!=='memory'&&n.type!=='core'){(byType[n.type]||byType.thing).push(n)}});
+    CL.forEach(function(t,ci){var list=byType[t]||[];var d=DIRS[ci]||[0,1,0];var b=basis(d),u=b[0],v=b[1];var cone=Math.min(.68,.4+.05*Math.sqrt(list.length||1)),cosMax=Math.cos(cone);list.forEach(function(n,k){var ct=1-((k+.5)/Math.max(1,list.length))*(1-cosMax),st=Math.sqrt(Math.max(0,1-ct*ct)),phi=k*2.4;var R=205+(Math.random()-.5)*34;n.x=(d[0]*ct+(u[0]*Math.cos(phi)+v[0]*Math.sin(phi))*st)*R;n.y=(d[1]*ct+(u[1]*Math.cos(phi)+v[1]*Math.sin(phi))*st)*R;n.z=(d[2]*ct+(u[2]*Math.cos(phi)+v[2]*Math.sin(phi))*st)*R;n.r=2.6+Math.min(6.5,Math.sqrt(n.degree||1)*1.25)})});
+    var map={};nodes.forEach(function(n){map[n.id]=n});
+    nodes.filter(function(n){return n.type==='memory'}).forEach(function(n,k){var cx=0,cy=0,cz=0,c=0;(n.entities||[]).forEach(function(id){var e=map[id];if(e){cx+=e.x;cy+=e.y;cz+=e.z;c++}});if(c){cx/=c;cy/=c;cz/=c;var L=Math.sqrt(cx*cx+cy*cy+cz*cz)||1;n.x=cx/L*132;n.y=cy/L*132;n.z=cz/L*132}else{var d=dir(k,40);n.x=d[0]*132;n.y=d[1]*132;n.z=d[2]*132}n.r=1.8+(n.importance||.4)*3.2;n.ph=(k*.9)%6.28});
+  }
+  function basis(d){var up=Math.abs(d[1])>.9?[1,0,0]:[0,1,0];var u=[d[1]*up[2]-d[2]*up[1],d[2]*up[0]-d[0]*up[2],d[0]*up[1]-d[1]*up[0]];var L=Math.hypot.apply(null,u)||1;u=u.map(function(x){return x/L});var v=[d[1]*u[2]-d[2]*u[1],d[2]*u[0]-d[0]*u[2],d[0]*u[1]-d[1]*u[0]];return[u,v]}
+  var SPR={};
+  function sprite(color){if(SPR[color])return SPR[color];var s=document.createElement('canvas');s.width=s.height=64;var c=s.getContext('2d');var h=color.replace('#','');var r=parseInt(h.substring(0,2),16),g=parseInt(h.substring(2,4),16),b=parseInt(h.substring(4,6),16);var gr=c.createRadialGradient(32,32,0,32,32,32);gr.addColorStop(0,'rgba(255,255,255,.95)');gr.addColorStop(.25,'rgba('+r+','+g+','+b+',.8)');gr.addColorStop(.6,'rgba('+r+','+g+','+b+',.18)');gr.addColorStop(1,'rgba('+r+','+g+','+b+',0)');c.fillStyle=gr;c.fillRect(0,0,64,64);SPR[color]=s;return s}
+  function frame(t){ctx.clearRect(0,0,W,H);if(!drag&&!hover)yaw+=.0016;
+    ctx.globalCompositeOperation='lighter';for(var i=0;i<stars.length;i++){var st=stars[i],tw=st.a*(.65+.35*Math.sin(t*st.sp+st.ph));ctx.fillStyle='rgba(200,220,255,'+tw.toFixed(3)+')';ctx.beginPath();ctx.arc(st.x,st.y,st.r,0,6.28);ctx.fill()}
+    var bg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,300*zoom);bg.addColorStop(0,'rgba(70,110,220,.10)');bg.addColorStop(1,'rgba(0,0,0,0)');ctx.fillStyle=bg;ctx.beginPath();ctx.arc(W/2,H/2,300*zoom,0,6.28);ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    var pts={};nodes.forEach(function(n){pts[n.id]=project(n)});
+    edges.forEach(function(e){var a=pts[e.src],b=pts[e.dst];if(!a||!b)return;var dep=Math.max(-1,Math.min(1,(a.z+b.z)/300));var alpha=Math.max(.015,(e.kind==='relation'?.22:.09)*(.7-dep*.25));ctx.strokeStyle='rgba(255,255,255,'+alpha.toFixed(3)+')';ctx.lineWidth=e.kind==='relation'?.7:.35;if(e.kind==='cooccur')ctx.setLineDash([2,3]);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([])});
+    if(!last)last=t;var dt=Math.min(.05,t-last);last=t;
+    if(Math.random()<dt*1.2){var n=nodes[(Math.random()*nodes.length)|0];if(n)pulses.push({id:n.id,start:t,life:.8+Math.random()*.5})}
+    ctx.globalCompositeOperation='lighter';
+    pulses=pulses.filter(function(p){var k=(t-p.start)/p.life;if(k>=1)return false;var q=pts[p.id];if(!q)return false;var rr=Math.max(2,8)*(1+k*4);ctx.strokeStyle='rgba(140,240,255,'+((1-k)*.6).toFixed(3)+')';ctx.lineWidth=1;ctx.beginPath();ctx.arc(q.x,q.y,rr,0,6.28);ctx.stroke();return true});
+    var order=nodes.slice().sort(function(a,b){return pts[a.id].z-pts[b.id].z});
+    order.forEach(function(n){var p=pts[n.id];var c=n.type==='memory'?(KIND[n.kind]||'#9be9ff'):(COL[n.type]||'#9aa3b8');var r=Math.max(1.8,n.r*p.s);var size=r*(n.type==='core'?5.2:3.4);var alpha=.42+.45*Math.max(0,Math.min(1,p.s));if(n===hover)alpha=1;ctx.globalAlpha=alpha;ctx.drawImage(sprite(c),p.x-size/2,p.y-size/2,size,size);ctx.globalAlpha=1});
+    if(Math.random()<dt*3){var sn=nodes[(Math.random()*nodes.length)|0];if(sn)sparkles.push({id:sn.id,start:t,life:1.4})}
+    sparkles=sparkles.filter(function(s){var k=(t-s.start)/s.life;if(k>=1)return false;var q=pts[s.id];if(!q)return false;var rr=6+k*24;var g=ctx.createRadialGradient(q.x,q.y,0,q.x,q.y,rr);g.addColorStop(0,'rgba(210,255,255,'+((1-k)*.4).toFixed(3)+')');g.addColorStop(1,'rgba(0,229,255,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(q.x,q.y,rr,0,6.28);ctx.fill();return true});
+    ctx.globalCompositeOperation='source-over';
+    if(hover&&pts[hover.id]){var hp=pts[hover.id];ctx.strokeStyle='rgba(255,255,255,.55)';ctx.lineWidth=.9;ctx.beginPath();ctx.arc(hp.x,hp.y,Math.max(6,hover.r*hp.s*1.6),0,6.28);ctx.stroke()}
+    requestAnimationFrame(frame)}
+  function pick(mx,my){var best=null,bd=196;nodes.forEach(function(n){var p=project(n),d=(p.x-mx)*(p.x-mx)+(p.y-my)*(p.y-my);if(d<bd){bd=d;best=n}});return best}
+  canvas.addEventListener('mousedown',function(e){drag=true;lx=e.clientX;ly=e.clientY;canvas.classList.add('drag')});
+  addEventListener('mouseup',function(){drag=false;canvas.classList.remove('drag')});
+  addEventListener('mousemove',function(e){if(drag){yaw+=(e.clientX-lx)*.005;pitch+=(e.clientY-ly)*.004;lx=e.clientX;ly=e.clientY}var r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;hover=pick(mx,my);var tip=document.getElementById('tip');if(hover){tip.style.display='block';tip.textContent=hover.name||'';tip.style.left=(mx+14)+'px';tip.style.top=(my-8)+'px'}else tip.style.display='none'});
+  canvas.addEventListener('wheel',function(e){e.preventDefault();zoom=Math.max(.45,Math.min(3.2,zoom*(e.deltaY<0?1.1:.9)))},{passive:false});
+  function setStats(s){document.getElementById('stats').textContent='记忆 '+s.active+' · 实体 '+s.entities+' · 关系 '+s.relations}
+  function buildGraph(g){
+    nodes=[core];edges=[];var keep={};
+    (g.nodes||[]).forEach(function(n){nodes.push({id:n.id,name:n.name,type:n.type,degree:n.degree,x:0,y:0,z:0,r:3});edges.push({src:-1,dst:n.id,kind:'core'});keep[n.id]=1});
+    (g.memories||[]).forEach(function(m){var id='m'+m.id;nodes.push({id:id,type:'memory',kind:m.kind,name:m.text,importance:m.importance,entities:m.entities||[],x:0,y:0,z:0,r:2});(m.entities||[]).forEach(function(e){if(keep[e])edges.push({src:e,dst:id,kind:'memory'})})});
+    (g.edges||[]).forEach(function(e){if(keep[e.src]&&keep[e.dst])edges.push(e)});
+    layout();
+    document.getElementById('legend').innerHTML='<span style="color:#00e5ff"><i style="background:#00e5ff"></i>人物</span><span style="color:#ffb020"><i style="background:#ffb020"></i>物件</span><span style="color:#b967ff"><i style="background:#b967ff"></i>话题</span><span style="color:#39ff8f"><i style="background:#39ff8f"></i>地点</span><span style="color:#ff3d81"><i style="background:#ff3d81"></i>技能</span><span style="color:#ffd166"><i style="background:#ffd166"></i>记忆</span>';
+  }
+  function load(){
+    var h={'Authorization':'Bearer '+token()};
+    Promise.all([fetch('/graph',{headers:h}).then(function(r){if(r.status===401)throw new Error('401');return r.json()}),fetch('/stats',{headers:h}).then(function(r){return r.json()})]).then(function(a){if(a[0].status!=='ok')throw new Error(a[0].message||'加载失败');buildGraph(a[0].data);if(a[1].status==='ok')setStats(a[1].data);requestAnimationFrame(frame)}).catch(function(e){if(e.message==='401'){document.getElementById('auth').style.display='flex'}else{document.getElementById('stats').textContent=e.message}})
+  }
+  document.getElementById('go').onclick=function(){localStorage.setItem('memory_token',document.getElementById('token').value.trim());location.reload()};
+  addEventListener('resize',resize);resize();load();
+})();
+</script>
+</body>
+</html>

@@ -115,6 +115,37 @@ class MemoryService:
         block = "\n".join(lines)
         return {"hits": out, "block": block}
 
+    def graph(self) -> dict:
+        raw = self.store.graph(limit=240)
+        nodes = [
+            {"id": int(n["id"]), "name": n["name"], "type": n["type"], "degree": int(n["degree"])}
+            for n in raw["nodes"]
+        ]
+        keep = {n["id"] for n in nodes}
+        edges = []
+        for e in raw["edges"]:
+            if int(e["src_id"]) in keep and int(e["dst_id"]) in keep:
+                edges.append({"src": int(e["src_id"]), "dst": int(e["dst_id"]),
+                              "kind": "relation", "label": e["relation"], "weight": float(e["weight"])})
+        for e in self.store.cooccurrence_edges(limit=1200):
+            if e["src"] in keep and e["dst"] in keep:
+                edges.append({"src": e["src"], "dst": e["dst"], "kind": "cooccur", "weight": float(e["weight"])})
+        rows = self.store.conn.execute(
+            """SELECT m.id, m.text, m.kind, m.importance, m.created_at,
+                      GROUP_CONCAT(me.entity_id) AS ents
+               FROM memories m
+               LEFT JOIN memory_entities me ON me.memory_id = m.id
+               WHERE m.status='active'
+               GROUP BY m.id ORDER BY m.created_at DESC LIMIT 300"""
+        ).fetchall()
+        memories = [{
+            "id": int(r["id"]), "text": str(r["text"])[:120], "kind": r["kind"],
+            "importance": round(float(r["importance"] or 0), 2),
+            "created_at": float(r["created_at"]),
+            "entities": [int(x) for x in str(r["ents"] or "").split(",") if x.strip()],
+        } for r in rows]
+        return {"nodes": nodes, "edges": edges, "memories": memories}
+
     def stats(self) -> dict:
         s = self.store.stats()
         s["avg_importance"] = round(self.engine._avg_importance(), 3)
@@ -206,7 +237,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self._auth():
             self._send(401, {"status": "error", "message": "unauthorized"})
             return
-        if self.path == "/v1/models":
+        if self.path == "/panel":
+            try:
+                body = (Path(__file__).resolve().parent / "panel.html").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path == "/graph":
+            try:
+                self._send(200, {"status": "ok", "data": service().graph()})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path == "/v1/models":
             self._send(200, {"object": "list", "data": [{"id": "memory-core", "object": "model"}]})
         elif self.path == "/health":
             try:
