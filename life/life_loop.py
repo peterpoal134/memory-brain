@@ -430,7 +430,7 @@ def transcribe_audio(wav: Path) -> str:
                                     download_root=str(WHISPER_DIR))
         segs, _ = _whisper.transcribe(
             str(wav), language="zh", vad_filter=True, beam_size=1,
-            initial_prompt="这是角色和用户会看的视频。常提到：用户、角色、白菜、朋友。",
+            initial_prompt="这是角色和用户会看的视频。常提到：用户、角色、宠物、朋友。",
         )
         return re.sub(r"\s+", "", "".join(s.text for s in segs))[:300]
     except Exception as exc:
