@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import random
 import re
+import time
+import time
 from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
+from astrbot.api.message_components import At, Plain
 
 MARKER = "【聊天风格·最后检查】"
 EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]")
@@ -38,8 +42,16 @@ STYLE_BLOCK = f"""{MARKER}
 绝对不要问“有什么可以帮你”“有什么我能帮”“需要我做什么”“要不要我帮忙”，不要主动提供帮助，不要说“随时告诉我”“有事叫我”“尽管吩咐”。
 对方没求助，就不要给方案；先接住他这句话。
 日常一到两句，短句，不列点、不总结、不写“首先/其次/总之”。认真任务可以展开，但不要客服腔。
-如果对方只是打招呼，就回“在”“嗯”“咋了”，不要追问需求，也不要问“是想我了还是有事”。
-像微信打字，不像写作文：日常短句结尾**不要加句号**，少用完整语法；可以用“啊/吧/呢/算了/行吧”，可以只回半句。
+你在群里也能聊读过的书，不需要让人私聊；想翻一页就用 read_book。
+记忆块或上下文里没有的事，不要编；直接说“我记不清了”“这个没查到”。日期、书名、账号这类细节尤其不要猜。
+消息里出现 [引用消息(…)] 时，先读懂被引用的那句话，再回；不要装没看见。
+要找人办事时，像真人一样：先@对方，再喊一声（昵称、外号或名字），然后说事。
+例：@朋友 朋友，帮我安排个听歌的呗。／@小王 小王，那个文件你看了吗。
+@ 就用 @名字 的写法，系统会转成真的@，屏幕上显示的是他的群名片，不是你打的字。
+回答“某某是谁”时，只说人和关系（“管理员啊”“就是朋友”），不要报 QQ、账号、群昵称，也不要把记忆原文念出来。
+对方在哄你、说软话时，别只回一个“嗯”，接住那句话。
+对方打招呼时，回一句自然的，比如“在，咋了”“醒啦”“嗯，在呢”；不要追问需求，也不要问“是想我了还是有事”。
+像微信打字，不像写作文：日常短句结尾**不要加句号**，少用完整语法；可以用“啊/吧/呢/算了/行吧”。短可以，但别让话掉地上；想多说就带半句反应，不想说就短着。
 不写括号里的动作或旁白（不要“（笑）”“（尾巴一摆）”这种），不每句都抖一个机灵，也不每句都收得很漂亮。
 偶尔可以慢半拍、先丢一句短的，再补一句；拿不准就“啊？”“啥意思”“没听懂”。
 例：在吗 → 在。咋了。／今天好累 → 累成这样啊，先瘫着。／你能帮我个忙吗 → 说呗。
@@ -106,10 +118,24 @@ def clean_text(text: str) -> str:
     "1.0.0",
 )
 class HumanStyleGuardPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         # 每个会话最近一次用的表情 + 距离上次隔了几条
         self._face_state: dict[str, dict] = {}
+        raw = str((config or {}).get("at_map") or "")
+        if not raw:
+            try:
+                cfg = Path(__file__).resolve().parents[2] / "config" / "astrbot_plugin_human_style_guard_config.json"
+                raw = str(json.loads(cfg.read_text(encoding="utf-8-sig")).get("at_map") or "")
+            except Exception:
+                raw = ""
+        try:
+            self.at_map = {str(k): str(v) for k, v in json.loads(raw or "{}").items()}
+        except Exception:
+            self.at_map = {}
+        self._member_cache: dict[str, tuple[float, dict[str, str]]] = {}
+        self._last_reply: dict[str, tuple[str, float]] = {}
+        logger.info(f"[human_style] @ 映射 {len(self.at_map)} 人")
 
     @filter.on_llm_request()
     async def inject_style(self, event: AstrMessageEvent, req) -> None:
@@ -121,6 +147,70 @@ class HumanStyleGuardPlugin(Star):
             req.system_prompt = (base + "\n\n" + STYLE_BLOCK).strip()
         except Exception:
             logger.exception("[human_style] 注入风格护栏失败")
+
+    async def _members(self, event: AstrMessageEvent) -> dict[str, str]:
+        """群成员 名字→QQ，缓存 5 分钟。"""
+        gid = str(event.get_group_id() or "")
+        if not gid:
+            return {}
+        now = time.time()
+        cached = self._member_cache.get(gid)
+        if cached and now - cached[0] < 300:
+            return cached[1]
+        mapping: dict[str, str] = {}
+        try:
+            members = await event.bot.get_group_member_list(group_id=int(gid))
+            for m in members or []:
+                uid = str(m.get("user_id") or "")
+                if not uid:
+                    continue
+                for key in ("card", "nickname", "remark"):
+                    name = str(m.get(key) or "").strip()
+                    if name:
+                        mapping.setdefault(name, uid)
+        except Exception:
+            logger.debug("[human_style] 获取群成员失败", exc_info=True)
+        self._member_cache[gid] = (now, mapping)
+        return mapping
+
+    @filter.on_decorating_result()
+    async def render_at(self, event: AstrMessageEvent) -> None:
+        """把模型写的 [At:123456] 或 @名字 变成真正的 @。"""
+        try:
+            result = event.get_result()
+            if result is None or not getattr(result, "chain", None):
+                return
+            new_chain = []
+            changed = False
+            for seg in result.chain:
+                if isinstance(seg, Plain):
+                    text = seg.text
+                    # @名字 → 真 @：[At:QQ] 优先，其次静态映射，最后查群成员
+                    members = None
+                    for m in re.finditer(r"@([\w\u4e00-\u9fa5]{1,12})", text):
+                        name = m.group(1)
+                        qq = self.at_map.get(name)
+                        if not qq:
+                            if members is None:
+                                members = await self._members(event)
+                            qq = members.get(name)
+                        if qq:
+                            text = text.replace("@" + name, f"[At:{qq}]", 1)
+                            changed = True
+                    parts = re.split(r"(\[At:\d+\])", text)
+                    for part in parts:
+                        m = re.fullmatch(r"\[At:(\d+)\]", part or "")
+                        if m:
+                            new_chain.append(At(qq=m.group(1)))
+                            changed = True
+                        elif part:
+                            new_chain.append(Plain(part))
+                else:
+                    new_chain.append(seg)
+            if changed:
+                result.chain = new_chain
+        except Exception:
+            logger.exception("[human_style] @ 转换失败")
 
     @filter.on_decorating_result()
     async def human_delay(self, event: AstrMessageEvent) -> None:
@@ -188,7 +278,7 @@ class HumanStyleGuardPlugin(Star):
             if label in ("生气", "难过", "委屈") or valence < -0.2:
                 cleaned = cleaned.replace("！", "。").replace("!", "。")
                 prob *= 0.35
-            elif label in ("开心", "感动", "害羞") or valence > 0.3:
+            elif label in ("开心", "感动", "害羞", "惊讶") or valence > 0.3:
                 prob *= 1.4
             if label in ("生气", "难过"):
                 prob = 0.0
@@ -198,6 +288,18 @@ class HumanStyleGuardPlugin(Star):
                 cleaned = cleaned.rstrip() + " " + face
                 state["last"] = face
                 state["gap"] = 0
+            # 复读检测：3 分钟内和上一条几乎一样，就收成一句短的
+            try:
+                now = time.time()
+                last = self._last_reply.get(session)
+                cmp_now = re.sub(r"\s*\[[^\[\]]{1,8}\]$", "", cleaned)
+                if last and len(cmp_now) >= 8 and now - last[1] < 180:
+                    if difflib.SequenceMatcher(None, cmp_now, last[0]).ratio() >= 0.85:
+                        logger.info("[human_style] 复读，收短")
+                        cleaned = "嗯"
+                self._last_reply[session] = (last[0] if cleaned == "嗯" and last else cmp_now, now)
+            except Exception:
+                pass
             if cleaned != text:
                 resp.completion_text = cleaned
         except Exception:

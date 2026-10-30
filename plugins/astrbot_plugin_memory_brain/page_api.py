@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import json
+import re
 import time
+from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
@@ -31,6 +34,14 @@ class PageApi:
             ("/overview", self.overview, ["GET"], "概览"),
             ("/graph", self.graph, ["GET"], "图谱"),
             ("/memories", self.memories, ["GET"], "记忆列表"),
+            ("/changes", self.changes, ["GET"], "新增与衰减"),
+            ("/activity", self.activity, ["GET"], "说话状态"),
+            ("/eval", self.eval_latest, ["GET"], "评估结果"),
+            ("/eval/run", self.eval_run, ["POST"], "跑一次评估"),
+            ("/eval/drafts", self.eval_drafts, ["GET"], "待标注草稿"),
+            ("/eval/sample", self.eval_sample, ["POST"], "抽一批待标"),
+            ("/eval/draft/save", self.eval_draft_save, ["POST"], "保存标注"),
+            ("/eval/draft/skip", self.eval_draft_skip, ["POST"], "跳过我条"),
             ("/entity", self.entity, ["GET"], "实体详情"),
             ("/search", self.search, ["POST"], "检索"),
             ("/memory/delete", self.delete_memory, ["POST"], "删除记忆"),
@@ -127,7 +138,7 @@ class PageApi:
                     "id": int(r["id"]),
                     "text": str(r["text"])[:120],
                     "kind": r["kind"],
-                    "importance": round(float(r["importance"]), 2),
+                    "importance": round(float(r["importance"] or 0), 2),
                     "created_at": float(r["created_at"]),
                     "entities": [int(x) for x in str(r["ents"] or "").split(",") if x.strip()],
                 }
@@ -136,6 +147,231 @@ class PageApi:
             return _ok({"nodes": nodes, "edges": edges, "memories": memories})
         except Exception as exc:
             logger.exception("[brain] 图谱失败")
+            return _err(str(exc))
+
+    @property
+    def _eval_path(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parents[2] / "plugin_data" / PLUGIN_NAME / "eval_queries.jsonl"
+
+    def _eval_save(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parents[2] / "plugin_data" / PLUGIN_NAME / "eval_latest.json"
+
+    @property
+    def _draft_path(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parents[2] / "plugin_data" / PLUGIN_NAME / "eval_draft.jsonl"
+
+    @staticmethod
+    def _read_jsonl(path):
+        try:
+            return [json.loads(l) for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _write_jsonl(path, rows):
+        from pathlib import Path
+        Path(path).write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                              encoding="utf-8")
+
+    async def eval_drafts(self) -> dict[str, Any]:
+        rows = self._read_jsonl(self._draft_path)
+        for r in rows:
+            r.pop("candidates_full", None)
+        return _ok({"drafts": rows})
+
+    async def eval_sample(self) -> dict[str, Any]:
+        """抽最近消息生成待标草稿（不调外部脚本）。"""
+        try:
+            payload = await request.json(default={}) or {}
+            n = min(20, max(3, int(payload.get("n") or 10)))
+            rows = self.plugin.store.recent_raw("user", limit=300)
+            drafts = []
+            seen = set()
+            for r in reversed(rows):
+                q = re.sub(r"\[[^\]]*\]", "", str(r.get("text") or "")).strip()
+                q = re.sub(r"\s+", " ", q)
+                if not (6 <= len(q) <= 40) or q in seen or q.startswith("/") or "http" in q:
+                    continue
+                seen.add(q)
+                vec = await self.plugin._embed(q)
+                hits = self.plugin.engine.recall(q, k=5, query_vec=vec, touch=False,
+                                                 visibility_allow={"public", "private", "group"})
+                drafts.append({
+                    "query": q,
+                    "type": "fact",
+                    "status": "draft",
+                    "candidates": [{"id": int(h["id"]), "score": round(float(h["score"]), 3),
+                                    "text": str(h["text"])[:100]} for h in hits],
+                })
+                if len(drafts) >= n:
+                    break
+            self._write_jsonl(self._draft_path, drafts)
+            return _ok({"count": len(drafts)})
+        except Exception as exc:
+            logger.exception("[brain] 抽样失败")
+            return _err(str(exc))
+
+    async def eval_draft_save(self) -> dict[str, Any]:
+        try:
+            payload = await request.json(default={}) or {}
+            q = str(payload.get("query") or "")
+            ids = [int(x) for x in (payload.get("ids") or [])]
+            negative = bool(payload.get("negative"))
+            drafts = self._read_jsonl(self._draft_path)
+            row = next((d for d in drafts if d.get("query") == q), None)
+            if row is None:
+                return _err("没有这条草稿")
+            eval_rows = self._read_jsonl(self._eval_path)
+            eval_rows.append({
+                "query": q,
+                "expect_any": ids,
+                "type": row.get("type") or "fact",
+                "status": "active",
+                "note": "negative" if negative else "",
+            })
+            self._write_jsonl(self._eval_path, eval_rows)
+            self._write_jsonl(self._draft_path, [d for d in drafts if d.get("query") != q])
+            return _ok({"ok": True, "left": len(drafts) - 1})
+        except Exception as exc:
+            logger.exception("[brain] 保存标注失败")
+            return _err(str(exc))
+
+    async def eval_draft_skip(self) -> dict[str, Any]:
+        try:
+            payload = await request.json(default={}) or {}
+            q = str(payload.get("query") or "")
+            drafts = self._read_jsonl(self._draft_path)
+            self._write_jsonl(self._draft_path, [d for d in drafts if d.get("query") != q])
+            return _ok({"ok": True, "left": max(0, len(drafts) - 1)})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def activity(self) -> dict[str, Any]:
+        try:
+            return _ok({"until": float(getattr(self.plugin, "_activity_until", 0.0) or 0.0),
+                        "now": time.time()})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def eval_latest(self) -> dict[str, Any]:
+        try:
+            p = self._eval_save()
+            if p.exists():
+                return _ok(json.loads(p.read_text(encoding="utf-8")))
+            return _ok({"empty": True})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def eval_run(self) -> dict[str, Any]:
+        """在当前记忆库上跑评估集：recall@1/@3/@5、MRR、分类型、未命中。"""
+        try:
+            import statistics
+
+            path = self._eval_path
+            if not path.exists():
+                return _err("还没有评估集：plugin_data/.../eval_queries.jsonl")
+            rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+            rows = [r for r in rows if r.get("status", "active") != "deprecated"]
+            if not rows:
+                return _err("评估集是空的")
+
+            hits1 = hits3 = hits5 = 0
+            rr = []
+            per: dict[str, list[bool]] = {}
+            misses = []
+            lat = []
+            neg_total = neg_fp = 0
+            for r in rows:
+                q = str(r.get("query") or "")
+                expect = set(int(x) for x in (r.get("expect_any") or r.get("expect") or []))
+                vec = await self.plugin._embed(q)
+                t0 = time.perf_counter()
+                got = self.plugin.engine.recall(
+                    q, k=5, query_vec=vec, touch=False,
+                    visibility_allow={"public", "private", "group"},
+                )
+                lat.append((time.perf_counter() - t0) * 1000)
+                if not expect:
+                    neg_total += 1
+                    if got and float(got[0]["score"]) >= 0.55:
+                        neg_fp += 1
+                    continue
+                ids = [int(h["id"]) for h in got]
+                rank = next((i + 1 for i, mid in enumerate(ids) if mid in expect), 0)
+                typ = str(r.get("type") or "misc")
+                ok = rank > 0
+                per.setdefault(typ, []).append(ok)
+                if rank == 1:
+                    hits1 += 1
+                if 0 < rank <= 3:
+                    hits3 += 1
+                if 0 < rank <= 5:
+                    hits5 += 1
+                rr.append(1.0 / rank if rank else 0.0)
+                if not ok:
+                    misses.append({
+                        "query": q,
+                        "expect": sorted(expect),
+                        "got": [{"id": int(h["id"]), "score": round(float(h["score"]), 3),
+                                 "text": str(h["text"])[:80]} for h in got[:3]],
+                    })
+
+            n = max(1, len(rows) - neg_total)
+            result = {
+                "time": time.strftime("%Y-%m-%d %H:%M"),
+                "n": n,
+                "negative": {"n": neg_total, "false_hit": neg_fp},
+                "recall1": round(hits1 / n, 4),
+                "recall3": round(hits3 / n, 4),
+                "recall5": round(hits5 / n, 4),
+                "mrr": round(sum(rr) / n, 4),
+                "p50_ms": round(statistics.median(lat), 1),
+                "per_type": {
+                    k: {"n": len(v), "recall3": round(sum(v) / len(v), 3)}
+                    for k, v in per.items()
+                },
+                "misses": misses[:10],
+            }
+            self._eval_save().write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            return _ok(result)
+        except Exception as exc:
+            logger.exception("[brain] 评估失败")
+            return _err(str(exc))
+
+    async def changes(self) -> dict[str, Any]:
+        """最近新增、正在变淡、已归档。"""
+        try:
+            now = time.time()
+            rows = self.plugin.store.list_memories(limit=300)
+            def brief(r):
+                return {
+                    "id": int(r.get("id") or 0),
+                    "text": str(r.get("text") or "")[:120],
+                    "kind": r.get("kind") or "",
+                    "importance": round(float(r.get("importance") or 0), 2),
+                    "date": time.strftime("%m-%d %H:%M", time.localtime(float(r.get("created_at") or 0)))
+                            if r.get("created_at") else "",
+                    "archived": r.get("archived_at") or 0,
+                }
+            added = [brief(r) for r in rows if float(r.get("created_at") or 0) > now - 86400]
+            fading = sorted(
+                [r for r in rows if float(r.get("importance") or 0) <= 0.4],
+                key=lambda r: float(r.get("importance") or 0),
+            )
+            archived_rows = self.plugin.store.list_memories(status="archived", limit=10)
+            archived_count = self.plugin.store.conn.execute(
+                "select count(*) from memories where status='archived'"
+            ).fetchone()[0]
+            return _ok({
+                "added": {"count": len(added), "items": [brief(r) for r in added[:10]]},
+                "fading": {"count": len(fading), "items": [brief(r) for r in fading[:10]]},
+                "archived": {"count": int(archived_count), "items": [brief(r) for r in archived_rows]},
+            })
+        except Exception as exc:
+            logger.exception("[brain] 记忆变化读取失败")
             return _err(str(exc))
 
     async def memories(self) -> dict[str, Any]:
@@ -148,10 +384,10 @@ class PageApi:
                 {
                     "items": [
                         {
-                            "id": int(r["id"]),
+                            "id": int(r.get("id") or 0),
                             "text": r["text"],
                             "kind": r["kind"],
-                            "importance": round(float(r["importance"]), 2),
+                            "importance": round(float(r.get("importance") or 0), 2),
                             "valence": round(float(r["valence"]), 2),
                             "created_at": float(r["created_at"]),
                             "date": time.strftime("%Y-%m-%d %H:%M", time.localtime(float(r["created_at"]))),
@@ -181,7 +417,7 @@ class PageApi:
                     "profile_at": float(row.get("profile_at") or 0),
                     "memories": [
                         {
-                            "id": int(r["id"]),
+                            "id": int(r.get("id") or 0),
                             "text": r["text"],
                             "date": time.strftime("%Y-%m-%d", time.localtime(float(r["created_at"]))),
                         }

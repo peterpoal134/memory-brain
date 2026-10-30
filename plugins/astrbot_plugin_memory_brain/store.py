@@ -277,6 +277,36 @@ class Store:
         args += [int(limit), int(offset)]
         return [self._row_to_memory(r) for r in self.conn.execute(sql, args).fetchall()]
 
+    def raw_between(
+        self, start: float, end: float, limit: int = 8, session_like: str | None = None
+    ) -> list[tuple[float, str, str]]:
+        sql = """SELECT created_at, sender, text FROM raw_messages
+                 WHERE role='user' AND created_at >= ? AND created_at < ?"""
+        args: list[Any] = [float(start), float(end)]
+        if session_like:
+            sql += " AND session_id LIKE ?"
+            args.append(session_like)
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        args.append(int(limit))
+        rows = self.conn.execute(sql, args).fetchall()
+        return [(float(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+    def memories_in_range(
+        self, start: float, end: float, visibility: set[str], limit: int = 5,
+        kinds: tuple[str, ...] | None = None,
+    ) -> list[dict]:
+        marks = ",".join("?" * len(visibility))
+        sql = f"""SELECT * FROM memories
+                WHERE status='active' AND created_at >= ? AND created_at < ?
+                  AND visibility IN ({marks})"""
+        args: list[Any] = [float(start), float(end), *visibility]
+        if kinds:
+            sql += " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
+            args.extend(kinds)
+        sql += " ORDER BY importance DESC, created_at DESC LIMIT ?"
+        args.append(int(limit))
+        return [self._row_to_memory(r) for r in self.conn.execute(sql, args).fetchall()]
+
     def delete_memory(self, memory_id: int) -> bool:
         memory_id = int(memory_id)
         self.conn.execute("DELETE FROM memories_fts WHERE memory_id=?", (memory_id,))
@@ -672,12 +702,25 @@ class Store:
         access_boost: float = 0.5,
         access_window_days: float = 30.0,
         access_max_count: float = 10.0,
+        protect_names: list[str] | None = None,
+        core_floor: float = 0.45,
+        emotion_factor: float = 0.4,
     ) -> int:
-        """每日衰减：近期被访问过的记忆衰减更慢（频率感知）。"""
+        """每日衰减：频率感知 + 情绪保护 + 核心人物地板。"""
         now = now or time.time()
         window = now - max(1.0, access_window_days) * 86400
+        protect = {str(n).strip() for n in (protect_names or []) if str(n).strip()}
+        core_ids: set[int] = set()
+        if protect:
+            for row in self.conn.execute(
+                """SELECT DISTINCT me.memory_id FROM memory_entities me
+                   JOIN entities e ON e.id = me.entity_id
+                   WHERE e.name IN (%s)""" % ",".join("?" * len(protect)),
+                list(protect),
+            ):
+                core_ids.add(int(row[0]))
         rows = self.conn.execute(
-            "SELECT id, importance, access_count, last_access FROM memories WHERE status='active'"
+            "SELECT id, importance, access_count, last_access, valence, arousal FROM memories WHERE status='active'"
         ).fetchall()
         updates = []
         for r in rows:
@@ -686,7 +729,20 @@ class Store:
                 factor = 1.0 - access_boost * min(
                     1.0, float(r["access_count"]) / max(1.0, access_max_count)
                 )
-            new_imp = max(0.01, float(r["importance"]) * (1.0 - float(rate) * factor))
+            rate_i = float(rate)
+            val = abs(float(r["valence"] or 0))
+            if val > 1:
+                val /= 100.0
+            aro = float(r["arousal"] or 0)
+            if aro > 1:
+                aro /= 100.0
+            # 情绪强的记忆，忘得更慢
+            if val >= 0.5 or aro >= 0.5:
+                rate_i *= float(emotion_factor)
+            new_imp = max(0.01, float(r["importance"]) * (1.0 - rate_i * factor))
+            # 核心人物相关：不低于地板
+            if int(r["id"]) in core_ids:
+                new_imp = max(new_imp, float(core_floor))
             updates.append((round(new_imp, 4), int(r["id"])))
         if updates:
             self.conn.executemany("UPDATE memories SET importance=? WHERE id=?", updates)

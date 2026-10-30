@@ -270,6 +270,21 @@
     });
   }
 
+  function confirmTwice(btn, label, fn) {
+    if (btn.dataset.armed === '1') {
+      btn.dataset.armed = '';
+      btn.textContent = '删除';
+      fn();
+      return;
+    }
+    btn.dataset.armed = '1';
+    btn.textContent = label;
+    setTimeout(function () {
+      btn.dataset.armed = '';
+      btn.textContent = '删除';
+    }, 3000);
+  }
+
   function renderMood(m) {
     state.mood = m;
     document.getElementById('v-valence').innerHTML = Math.round(m.valence) + '<small>/100</small>';
@@ -325,10 +340,12 @@
         try { await call('page/affinity/set', { user_id: u.id, score: v }); toast('已保存'); refresh(); }
         catch (e) { toast(e.message); }
       };
-      tr.querySelector('.del').onclick = async function () {
-        if (!confirm('删除 ' + u.name + ' 的好感记录？')) return;
-        try { await call('page/affinity/delete', { user_id: u.id }); toast('已删除'); refresh(); }
-        catch (e) { toast(e.message); }
+      tr.querySelector('.del').onclick = function () {
+        var btn = this, name = u.name, uid = u.id;
+        confirmTwice(btn, '再点一次', async function () {
+          try { await call('page/affinity/delete', { user_id: uid }); toast('已删除'); refresh(); }
+          catch (e) { toast(e.message); }
+        });
       };
       body.appendChild(tr);
     });
@@ -358,10 +375,12 @@
         try { await call('page/grudge/resolve', { id: e.id }); toast('放下了'); refresh(); }
         catch (err) { toast(err.message); }
       };
-      div.querySelector('.del').onclick = async function () {
-        if (!confirm('删除这条旧账？')) return;
-        try { await call('page/grudge/delete', { id: e.id }); toast('已删除'); refresh(); }
-        catch (err) { toast(err.message); }
+      div.querySelector('.del').onclick = function () {
+        var btn = this, eid = e.id;
+        confirmTwice(btn, '再点一次', async function () {
+          try { await call('page/grudge/delete', { id: eid }); toast('已删除'); refresh(); }
+          catch (err) { toast(err.message); }
+        });
       };
       box.appendChild(div);
     });
@@ -381,10 +400,12 @@
         '<div class="row" style="margin-top:4px"><span class="meta">#' + e.id + ' · ' + e.date + ' · ' + e.by + '</span>' +
         '<span class="grow"></span><button class="danger del">删除</button></div>';
       div.querySelector('.text').textContent = e.text;
-      div.querySelector('.del').onclick = async function () {
-        if (!confirm('从识海删除？')) return;
-        try { await call('page/core/delete', { id: e.id }); toast('已删除'); refresh(); }
-        catch (err) { toast(err.message); }
+      div.querySelector('.del').onclick = function () {
+        var btn = this, eid = e.id;
+        confirmTwice(btn, '再点一次', async function () {
+          try { await call('page/core/delete', { id: eid }); toast('已删除'); refresh(); }
+          catch (err) { toast(err.message); }
+        });
       };
       box.appendChild(div);
     });

@@ -34,7 +34,7 @@
   .canvas-box{position:relative;flex:1;background:radial-gradient(circle at 50% 45%,rgba(0,60,90,0.30) 0%,rgba(4,8,12,0.92) 70%);border:1px solid rgba(0,229,255,.16);border-radius:6px;overflow:hidden;
     box-shadow:inset 0 0 90px rgba(0,180,220,.10), 0 0 30px rgba(0,229,255,.05)}
   .canvas-box::after{content:"";position:absolute;inset:0;pointer-events:none;
-    background:repeating-linear-gradient(0deg, rgba(0,229,255,.030) 0 1px, transparent 1px 3px)}
+    background:repeating-linear-gradient(0deg, rgba(0,229,255,.012) 0 1px, transparent 1px 5px)}
   .canvas-box::before{content:"";position:absolute;inset:7px;pointer-events:none;
     border:1px solid rgba(0,229,255,.12);border-radius:3px}
   canvas{display:block;width:100%;height:100%;cursor:grab}
@@ -72,6 +72,8 @@
     <div class="grow"></div>
     <button id="mode" title="切换 2D / 3D">2D</button>
     <button id="reload">重载</button>
+    <button id="changes">变化</button>
+    <button id="eval">评估</button>
     <button id="reflect">反思</button>
     <button id="abstract">沉淀</button>
     <button id="sleep">睡觉</button>
@@ -93,7 +95,7 @@
         <span><i class="dot" style="background:var(--skill)"></i>技能</span>
         <span><i class="dot" style="background:#4fd6ff"></i>记忆</span>
       </div>
-      <div class="hint" id="hint">拖拽旋转 · 滚轮缩放 · 点节点看记忆</div>
+      <div class="hint" id="hint">拖拽旋转 · 滚轮缩放 · 点节点看记忆 · v9（发呆有光点）</div>
     </div>
 
     <div class="side">
@@ -130,6 +132,16 @@
       await new Promise(function (r) { setTimeout(r, 60); });
     }
     return null;
+  }
+
+  var speakingUntil = 0, speaking = false, idleNext = 0, idleFireNext = 0;
+  async function pollActivity() {
+    try {
+      var d = await call('page/activity');
+      speakingUntil = Number(d.until || 0);
+    } catch (e) {}
+    speaking = (Date.now() / 1000) < speakingUntil;
+    setTimeout(pollActivity, 1200);
   }
 
   function toast(msg) {
@@ -174,7 +186,7 @@
   var nodes = [];
   var edges = [];
   var mode3d = true;
-  var yaw = 0.35, pitch = -0.18, zoom = 1, panX = 0, panY = 0;
+  var yaw = 0.35, pitch = -0.18, zoom = 1.55, panX = 0, panY = 0;
   var dragging = false, lastX = 0, lastY = 0;
   var hovered = null;
 
@@ -322,6 +334,221 @@
     };
   }
 
+
+  // ---------------------------------------------------------------- 大脑皮层线框
+  var CORTEX = null;
+  function buildCortex() {
+    CORTEX = [];
+    var R = 158;
+    for (var side = -1; side <= 1; side += 2) {
+      var ox = side * R * 0.50;
+      function push(a, b) { CORTEX.push([a, b]); }
+      // 纬线
+      for (var lat = -1.1; lat <= 1.11; lat += 0.30) {
+        var y = Math.sin(lat) * R * 0.74;
+        var rr = Math.cos(lat) * R * 0.36;
+        var prev = null;
+        for (var a = 0; a <= Math.PI * 2 + 0.01; a += Math.PI / 18) {
+          var pt = { x: ox + Math.cos(a) * rr, y: y, z: Math.sin(a) * rr * 1.45 };
+          if (prev) push(prev, pt);
+          prev = pt;
+        }
+      }
+      // 经线
+      for (var lon = 0; lon < Math.PI * 2; lon += Math.PI / 5) {
+        var prev2 = null;
+        for (var b = -1.15; b <= 1.15; b += 0.16) {
+          var yy = Math.sin(b) * R * 0.74;
+          var rr2 = Math.cos(b) * R * 0.36;
+          var pt2 = { x: ox + Math.cos(lon) * rr2, y: yy, z: Math.sin(lon) * rr2 * 1.45 };
+          if (prev2) push(prev2, pt2);
+          prev2 = pt2;
+        }
+      }
+    }
+  }
+
+  function drawCortex(t) {
+    if (!CORTEX) buildCortex();
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = 0.85;
+    var prevMid = null;
+    for (var m = -1.1; m <= 1.11; m += 0.08) {
+      var mp = project({ x: 0, y: Math.sin(m) * 165, z: 0 });
+      if (prevMid) {
+        ctx.strokeStyle = 'rgba(0,229,255,0.18)';
+        ctx.beginPath(); ctx.moveTo(prevMid.x, prevMid.y); ctx.lineTo(mp.x, mp.y); ctx.stroke();
+      }
+      prevMid = mp;
+    }
+    for (var i = 0; i < CORTEX.length; i++) {
+      var a = project(CORTEX[i][0]), b = project(CORTEX[i][1]);
+      if (!a || !b) continue;
+      var depth = Math.max(-1, Math.min(1, (a.z + b.z) / 260));
+      var alpha = Math.max(0.02, 0.10 * (0.95 - depth * 0.3));
+      ctx.strokeStyle = 'rgba(0,210,255,' + alpha.toFixed(3) + ')';
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 随机神经元放电
+  var fires = [];
+  function updateFires(t) {
+    if (speaking && Math.random() < 0.07) {
+      var n = nodes[(Math.random() * nodes.length) | 0];
+      if (n && n.type !== 'core') fires.push({ id: n.id, start: t, life: 0.75 + Math.random() * 0.5 });
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var i = fires.length - 1; i >= 0; i--) {
+      var f = fires[i];
+      var p = (t - f.start) / f.life;
+      if (p >= 1) { fires.splice(i, 1); continue; }
+      var node = nodes.find(function (x) { return x.id === f.id; });
+      if (!node) { fires.splice(i, 1); continue; }
+      var sp = project(node);
+      var rr = Math.max(3, node.r * sp.s) * (1 + p * 4.5);
+      var fa = (1 - p) * (f.dim ? 0.35 : 0.8);
+      ctx.strokeStyle = 'rgba(150,245,255,' + fa.toFixed(3) + ')';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, rr, 0, Math.PI * 2); ctx.stroke();
+      if (p < 0.45) {
+        var g = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, rr * 1.4);
+        g.addColorStop(0, 'rgba(220,255,255,' + ((1 - p) * (f.dim ? 0.18 : 0.45)).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(0,229,255,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, rr * 1.4, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+
+
+  // 脑形光晕：两瓣柔光，给网络一个“大脑”的轮廓
+  function drawBrainShell(t) {
+    var cx = W / 2 + panX, cy = H / 2 + panY;
+    var R = 250 * zoom;
+    var breathe = 0.5 + 0.5 * Math.sin(t * 0.8);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var side = -1; side <= 1; side += 2) {
+      for (var layer = 3; layer >= 1; layer--) {
+        var rr = R * (0.32 + layer * 0.09) * (1 + breathe * 0.015);
+        var g = ctx.createRadialGradient(
+          cx + side * R * 0.36, cy - R * 0.04, 0,
+          cx + side * R * 0.36, cy - R * 0.04, rr
+        );
+        g.addColorStop(0, 'rgba(40,130,235,' + (0.030 * layer + breathe * 0.006).toFixed(3) + ')');
+        g.addColorStop(0.55, 'rgba(90,70,220,' + (0.012 * layer).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(cx + side * R * 0.36, cy - R * 0.04, rr * 0.86, rr * 1.06, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  var SAT = null;
+  function drawOrbits(t) {
+    var rings = [
+      { rx: 455, rz: 300, tilt: 0.42, spin: 0.16, color: '0,229,255', a: 0.20, sat: true },
+      { rx: 510, rz: 345, tilt: -0.62, spin: -0.09, color: '150,120,255', a: 0.10 },
+      { rx: 565, rz: 385, tilt: 0.95, spin: 0.05, color: '255,90,190', a: 0.06 }
+    ];
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    rings.forEach(function (ring, idx) {
+      var prev = null;
+      for (var i = 0; i <= 140; i++) {
+        var a = (i / 140) * Math.PI * 2;
+        var x = Math.cos(a) * ring.rx;
+        var z = Math.sin(a) * ring.rz;
+        var y = z * Math.sin(ring.tilt);
+        z = z * Math.cos(ring.tilt);
+        var p = project({ x: x, y: y, z: z });
+        if (prev) {
+          ctx.strokeStyle = 'rgba(' + ring.color + ',' + ring.a.toFixed(3) + ')';
+          ctx.lineWidth = idx === 0 ? 1.0 : 0.7;
+          ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+        }
+        prev = p;
+      }
+    });
+
+    // 一颗重要的记忆，像卫星一样沿最外层轨道走
+    if (SAT) {
+      var ring = rings[0];
+      var ang = t * 0.32;
+      function posAt(a) {
+        var z = Math.sin(a) * ring.rz;
+        return project({
+          x: Math.cos(a) * ring.rx,
+          y: z * Math.sin(ring.tilt),
+          z: z * Math.cos(ring.tilt)
+        });
+      }
+      // 拖尾
+      for (var k = 1; k <= 5; k++) {
+        var tp = posAt(ang - k * 0.05);
+        ctx.fillStyle = 'rgba(150,245,255,' + (0.16 - k * 0.026).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(tp.x, tp.y, Math.max(1, 4 - k * 0.5), 0, Math.PI * 2); ctx.fill();
+      }
+      var sp = posAt(ang);
+      var g = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, 16);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.35, 'rgba(120,245,255,0.65)');
+      g.addColorStop(1, 'rgba(0,229,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, 16, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(230,255,255,0.95)';
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, 2.6, 0, Math.PI * 2); ctx.fill();
+
+      ctx.font = '10px ui-monospace,SFMono-Regular,Menlo,monospace';
+      ctx.fillStyle = 'rgba(160,245,255,0.62)';
+      ctx.textAlign = 'left';
+      ctx.fillText('核心 · ' + String((SAT.name || '')).slice(0, 10), sp.x + 14, sp.y - 6);
+    }
+    ctx.restore();
+  }
+
+
+  var sparkles = [], sparkleNext = 0;
+  function updateSparkles(t) {
+    if (t > sparkleNext) {
+      var n = speaking ? 6 : 4;
+      for (var i = 0; i < n; i++) {
+        var nd = nodes[(Math.random() * nodes.length) | 0];
+        if (nd) sparkles.push({ id: nd.id, start: t + Math.random() * 0.4, life: 1.4 + Math.random() * 0.8 });
+      }
+      sparkleNext = t + (speaking ? 0.5 : 2.5 + Math.random() * 2.5);
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var j = sparkles.length - 1; j >= 0; j--) {
+      var sp2 = sparkles[j];
+      var pr = (t - sp2.start) / sp2.life;
+      if (pr >= 1) { sparkles.splice(j, 1); continue; }
+      if (pr < 0) continue;
+      var nd2 = nodes.find(function (x) { return x.id === sp2.id; });
+      if (!nd2) { sparkles.splice(j, 1); continue; }
+      var pp = project(nd2);
+      var rr = (6 + pr * 22) * zoom;
+      var ga = (1 - pr) * (speaking ? 0.55 : 0.40);
+      var gg = ctx.createRadialGradient(pp.x, pp.y, 0, pp.x, pp.y, rr);
+      gg.addColorStop(0, 'rgba(210,255,255,' + ga.toFixed(3) + ')');
+      gg.addColorStop(0.45, 'rgba(80,230,255,' + (ga * 0.5).toFixed(3) + ')');
+      gg.addColorStop(1, 'rgba(0,229,255,0)');
+      ctx.fillStyle = gg;
+      ctx.beginPath(); ctx.arc(pp.x, pp.y, rr, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function draw() {
     ctx.clearRect(0, 0, W, H);
     if (mode3d && !dragging && !hovered) yaw += 0.0016;
@@ -366,7 +593,32 @@
     ctx.setLineDash([1, 14]);
     ctx.beginPath(); ctx.arc(0, 0, ringR * 1.35, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
+    // 外圈刻度
+    ctx.rotate(t * 0.05);
+    for (var tick = 0; tick < 72; tick++) {
+      var ang = (tick / 72) * Math.PI * 2;
+      var r1 = ringR * 1.62, r2 = r1 + (tick % 6 === 0 ? 8 : 3);
+      ctx.strokeStyle = tick % 6 === 0 ? 'rgba(0,229,255,0.45)' : 'rgba(0,229,255,0.16)';
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ang) * r1, Math.sin(ang) * r1);
+      ctx.lineTo(Math.cos(ang) * r2, Math.sin(ang) * r2);
+      ctx.stroke();
+    }
     ctx.restore();
+
+    drawBrainShell(t);
+    if (!speaking && t > idleFireNext) {
+      var rn = nodes[(Math.random() * nodes.length) | 0];
+      if (rn) fires.push({ id: rn.id, start: t, life: 1.1, dim: true });
+      idleFireNext = t + 6 + Math.random() * 5;
+    }
+    updateFires(t);
+    if (!speaking && t > idleNext) {
+      for (var ip = 0; ip < 6; ip++) pulseList.push(makePulse(t + ip * 0.5, true));
+      if (pulseList.length > 110) pulseList.splice(0, pulseList.length - 110);
+      idleNext = t + 2.5 + Math.random() * 3.5;
+    }
 
     // 线：白色，细，靠深度调透明度
     edges.forEach(function (e) {
@@ -375,6 +627,12 @@
       var depth = Math.max(-1, Math.min(1, (a.z + b.z) / 300));
       var base = e.kind === 'relation' ? 0.22 : (e.kind === 'memory' ? 0.09 : 0.05);
       var alpha = Math.max(0.015, base * (0.7 - depth * 0.25));
+      if (e.kind === 'relation' || e.kind === 'memory') {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(120,220,255,' + (alpha * 0.35).toFixed(3) + ')';
+        ctx.lineWidth = e.kind === 'relation' ? 2.4 : 1.6;
+        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
       ctx.beginPath();
       ctx.strokeStyle = 'rgba(255,255,255,' + alpha.toFixed(3) + ')';
       ctx.lineWidth = e.kind === 'relation' ? 0.7 : (e.kind === 'memory' ? 0.35 : 0.4);
@@ -387,13 +645,20 @@
     ctx.globalCompositeOperation = 'lighter';
     for (var k = 0; k < pulseList.length; k++) {
       var pu = pulseList[k];
+      if (!speaking && !pu.dim) continue;
+      var dimk = pu.dim ? 1.0 : 1;
       if (!pu.path || pu.path.length < 2) continue;
       var p = (t - pu.start) / pu.duration;
-      if (p >= 1) { pulseList[k] = makePulse(t + 0.6 + Math.random() * 3.0); continue; }
+      if (p >= 1) {
+        if (pu.dim) { pulseList.splice(k, 1); k--; }
+        else { pulseList[k] = makePulse(t + 0.6 + Math.random() * 3.0); }
+        continue;
+      }
       if (p < 0) continue;
 
       var fade = Math.min(1, p / 0.05) * Math.min(1, (1 - p) / 0.16);
       if (fade <= 0) continue;
+      fade *= dimk;
 
       var segs = pu.path.length - 1;
       var idx = Math.min(segs - 1, Math.floor(p * segs));
@@ -447,6 +712,7 @@
       ctx.globalAlpha = 1;
     });
     ctx.globalCompositeOperation = 'source-over';
+    updateSparkles(t);
 
     if (hovered) {
       var hp = pts[hovered.id];
@@ -565,6 +831,9 @@
     (g.edges || []).forEach(function (e) {
       edges.push({ src: e.src, dst: e.dst, kind: e.kind === 'relation' ? 'relation' : 'cooccur', label: e.label || '' });
     });
+    var important = nodes.filter(function (n) { return n.type === 'memory'; })
+      .sort(function (a, b) { return (b.imp || 0) - (a.imp || 0); });
+    SAT = important[0] || null;
     layout();
     buildPulses();
   }
@@ -608,14 +877,15 @@
     return path;
   }
 
-  function makePulse(startAt) {
+  function makePulse(startAt, dim) {
     var path = newPath();
     var segs = Math.max(1, path.length - 1);
     return {
       path: path,
       start: startAt,
       duration: segs * (5.0 + Math.random() * 4.0),
-      size: 0.9 + Math.random() * 0.8
+      size: dim ? (5.0 + Math.random() * 2.5) : (2.2 + Math.random() * 1.4),
+      dim: !!dim
     };
   }
 
@@ -651,13 +921,179 @@
         '<span>重要性 ' + (m.importance || '') + '</span>' +
         '<button class="del">删除</button></div>';
       div.querySelector('.t').textContent = m.text;
-      div.querySelector('.del').onclick = async function () {
-        if (!confirm('删除这条记忆？')) return;
+      var delBtn = div.querySelector('.del');
+      delBtn.onclick = async function () {
+        if (delBtn.dataset.armed !== '1') {
+          delBtn.dataset.armed = '1'; delBtn.textContent = '再点一次';
+          setTimeout(function () { delBtn.dataset.armed = ''; delBtn.textContent = '删除'; }, 3000);
+          return;
+        }
+        delBtn.dataset.armed = '';
         try { await call('page/memory/delete', { id: m.id }); toast('已删除'); reload(); }
         catch (e) { toast(e.message); }
       };
       box.appendChild(div);
     });
+  }
+
+  function renderChanges(d) {
+    var box = document.getElementById('side-title');
+    box.textContent = '记忆变化（24 小时）';
+    var list = document.getElementById('memories');
+    list.innerHTML = '';
+    var groups = [
+      ['新增', d.added, '最近写入的'],
+      ['变淡', d.fading, '重要性掉到 0.4 以下，再低就会归档'],
+      ['已归档', d.archived, '不再参与检索，180 天后删除'],
+    ];
+    groups.forEach(function (g) {
+      var h = document.createElement('div');
+      h.className = 'h';
+      h.textContent = g[0] + ' ' + (g[1] && g[1].count != null ? g[1].count : 0) + ' 条 · ' + g[2];
+      h.style.marginTop = '10px';
+      list.appendChild(h);
+      var items = (g[1] && g[1].items) || [];
+      if (!items.length) {
+        var e = document.createElement('div');
+        e.className = 'empty'; e.textContent = '暂无';
+        list.appendChild(e);
+        return;
+      }
+      items.forEach(function (m) {
+        var div = document.createElement('div');
+        div.className = 'mem';
+        var t = document.createElement('div'); t.className = 't'; t.textContent = m.text;
+        var meta = document.createElement('div'); meta.className = 'm';
+        meta.textContent = m.kind + ' · ' + m.date + ' · 重要性 ' + m.importance;
+        div.appendChild(t); div.appendChild(meta);
+        list.appendChild(div);
+      });
+    });
+  }
+
+  function renderEval(d, drafts) {
+    document.getElementById('side-title').textContent = '检索评估';
+    var box = document.getElementById('memories');
+    box.innerHTML = '';
+
+    drafts = drafts || [];
+    if (drafts.length) {
+      var dh = document.createElement('div');
+      dh.className = 'h';
+      dh.textContent = '待你标：' + drafts.length + ' 条（勾选对的，不用看 id）';
+      box.appendChild(dh);
+      drafts.forEach(function (item) {
+        var card = document.createElement('div');
+        card.className = 'mem';
+        var q = document.createElement('div'); q.className = 't'; q.textContent = item.query;
+        card.appendChild(q);
+        (item.candidates || []).forEach(function (c) {
+          var lab = document.createElement('label');
+          lab.style.cssText = 'display:flex;gap:6px;font-size:11.5px;padding:2px 0;color:#cfe3ef';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.value = c.id;
+          var span = document.createElement('span');
+          span.textContent = c.text;
+          lab.appendChild(cb); lab.appendChild(span);
+          card.appendChild(lab);
+        });
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:6px;margin-top:6px';
+        var save = document.createElement('button');
+        save.textContent = '保存选中';
+        save.onclick = async function () {
+          var ids = Array.prototype.slice.call(card.querySelectorAll('input:checked')).map(function (x) { return Number(x.value); });
+          if (!ids.length) { toast('先勾一条对的，或者点「都不对」'); return; }
+          try { await call('page/eval/draft/save', { query: item.query, ids: ids }); toast('已加入评估'); showEval(); }
+          catch (e) { toast(e.message); }
+        };
+        var none = document.createElement('button');
+        none.textContent = '都不对';
+        none.onclick = async function () {
+          try { await call('page/eval/draft/save', { query: item.query, ids: [], negative: true }); toast('记为无答案'); showEval(); }
+          catch (e) { toast(e.message); }
+        };
+        var skip = document.createElement('button');
+        skip.textContent = '跳过';
+        skip.onclick = async function () {
+          try { await call('page/eval/draft/skip', { query: item.query }); showEval(); }
+          catch (e) { toast(e.message); }
+        };
+        row.appendChild(save); row.appendChild(none); row.appendChild(skip);
+        card.appendChild(row);
+        box.appendChild(card);
+      });
+    }
+
+    if (!d || d.empty) {
+      var e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = '还没跑过。点下面的按钮跑一次。';
+      box.appendChild(e);
+    } else {
+      var h = document.createElement('div');
+      h.className = 'mem';
+      h.innerHTML = '<div class="t">' + d.n + ' 条 · recall@1 ' + Math.round(d.recall1 * 100) +
+        '% · @3 ' + Math.round(d.recall3 * 100) + '% · @5 ' + Math.round(d.recall5 * 100) +
+        '% · MRR ' + d.mrr + ' · p50 ' + d.p50_ms + 'ms</div>' +
+        '<div class="m">' + d.time + '</div>';
+      box.appendChild(h);
+
+      var types = Object.keys(d.per_type || {});
+      types.forEach(function (k) {
+        var v = d.per_type[k];
+        var row = document.createElement('div');
+        row.className = 'mem';
+        row.innerHTML = '<div class="m">' + k + ' · ' + v.n + ' 条 · @3 ' +
+          Math.round(v.recall3 * 100) + '%</div>';
+        box.appendChild(row);
+      });
+
+      (d.misses || []).forEach(function (m) {
+        var div = document.createElement('div');
+        div.className = 'mem';
+        var t = document.createElement('div'); t.className = 't'; t.textContent = '✗ ' + m.query;
+        var meta = document.createElement('div'); meta.className = 'm';
+        meta.textContent = '期望 ' + m.expect.join('/') + ' · 实得 ' +
+          (m.got || []).map(function (g) { return g.id; }).join('/');
+        div.appendChild(t); div.appendChild(meta);
+        box.appendChild(div);
+      });
+    }
+    var sample = document.createElement('button');
+    sample.textContent = '抽 10 条待标';
+    sample.style.marginTop = '10px';
+    sample.style.marginRight = '6px';
+    sample.onclick = async function () {
+      sample.disabled = true; sample.textContent = '抽样中…';
+      try { await call('page/eval/sample', { n: 10 }); toast('已生成草稿'); showEval(); }
+      catch (e) { toast(e.message); sample.disabled = false; sample.textContent = '抽 10 条待标'; }
+    };
+    box.appendChild(sample);
+
+    var run = document.createElement('button');
+    run.textContent = '跑一次评估';
+    run.style.marginTop = '10px';
+    run.onclick = async function () {
+      run.disabled = true; run.textContent = '评估中…';
+      try { var r = await call('page/eval/run', {}); renderEval(r); toast('完成'); }
+      catch (e) { toast(e.message); run.disabled = false; run.textContent = '跑一次评估'; }
+    };
+    box.appendChild(run);
+  }
+
+  async function showEval() {
+    try {
+      var r = await Promise.all([call('page/eval'), call('page/eval/drafts')]);
+      renderEval(r[0], (r[1] || {}).drafts || []);
+    } catch (e) { toast(e.message); }
+  }
+
+  async function showChanges() {
+    try {
+      var d = await call('page/changes');
+      renderChanges(d);
+    } catch (e) { toast(e.message); }
   }
 
   function renderProfile(n, text) {
@@ -716,7 +1152,7 @@
     this.textContent = mode3d ? '3D' : '2D';
     this.classList.toggle('on', mode3d);
     document.getElementById('hint').textContent = mode3d
-      ? '拖拽旋转 · 滚轮缩放 · 点节点看记忆'
+      ? '拖拽旋转 · 滚轮缩放 · 点节点看记忆 · v9（发呆有光点）'
       : '拖拽平移 · 滚轮缩放 · 点节点看记忆';
     if (mode3d) { yaw = 0.5; pitch = -0.25; panX = 0; panY = 0; }
     else { yaw = 0; pitch = 0; panX = 0; panY = 0; }
@@ -730,6 +1166,8 @@
     try { var d = await call('page/abstract', {}); toast(d.count ? '沉淀了 ' + d.count + ' 条事实' : '今天没有可沉淀的'); reload(); }
     catch (e) { toast(e.message); }
   };
+  document.getElementById('changes').onclick = showChanges;
+  document.getElementById('eval').onclick = showEval;
   document.getElementById('health').onclick = async function () {
     try {
       var d = await call('page/health');
@@ -832,7 +1270,7 @@
     document.getElementById('mode').textContent = mode3d ? '3D' : '2D';
     document.getElementById('mode').classList.toggle('on', mode3d);
     document.getElementById('hint').textContent = mode3d
-      ? '拖拽旋转 · 滚轮缩放 · 点节点看记忆'
+      ? '拖拽旋转 · 滚轮缩放 · 点节点看记忆 · v9（发呆有光点）'
       : '拖拽平移 · 滚轮缩放 · 点节点看记忆';
     view = await waitBridge();
     if (!view) {
@@ -840,6 +1278,7 @@
       return;
     }
     try { if (typeof view.ready === 'function') await view.ready(); } catch (e) {}
+    pollActivity();
     await reload();
   }
 

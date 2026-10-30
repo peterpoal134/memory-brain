@@ -232,5 +232,29 @@
     "hint": "每天从笔记和看过的内容里抽 2-3 条可照着做的道理。",
     "type": "bool",
     "default": true
+  },
+  "protect_names": {
+    "description": "核心人物名单",
+    "hint": "逗号分隔。这些人的相关记忆不会衰减到 0.45 以下。留空则不启用。",
+    "type": "string",
+    "default": ""
+  },
+  "core_floor": {
+    "description": "核心人物重要性下限",
+    "hint": "默认 0.45。",
+    "type": "float",
+    "default": 0.45
+  },
+  "emotion_decay_factor": {
+    "description": "强情绪记忆的衰减系数",
+    "hint": "默认 0.4，情绪强的记忆衰减速度乘以该值。",
+    "type": "float",
+    "default": 0.4
+  },
+  "owner_names": {
+    "description": "管理员/自己的称呼",
+    "hint": "逗号分隔。按时间回忆时只取这些人的原话；留空则不按称呼过滤。",
+    "type": "string",
+    "default": ""
   }
 }

@@ -20,6 +20,8 @@ _LIFE_DIR = _P(os.environ.get("ASTRBOT_LIFE_DIR", str(_DATA.parent / "life")))
 
 import asyncio
 import base64
+import datetime
+import json
 import re
 import time
 from pathlib import Path
@@ -27,8 +29,11 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import Plain
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.api.star import Context, Star, register
 
+from . import intention
 from . import (
     abstract, conflict, consolidate, extractor, media, multimodal, procedural, profile,
     health, lessons, reflection, style, voice, working,
@@ -130,6 +135,7 @@ class MemoryBrainPlugin(Star):
 
         self._buffers: dict[str, list[tuple[str, str]]] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._activity_until = 0.0
         self._last_decay = 0.0
         self._embedding = None
         self._page_api = None
@@ -161,6 +167,9 @@ class MemoryBrainPlugin(Star):
             self._page_api.register_routes()
         except Exception as exc:
             logger.warning(f"[brain] 页面接口注册失败（不影响记忆）：{exc}")
+        task = asyncio.create_task(self._reminder_loop())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         logger.info(
             f"[brain] 已启动：记忆 {s['active']} 条（归档 {s['archived']}），"
             f"实体 {s['entities']}，关系 {s['relations']}；"
@@ -307,6 +316,7 @@ class MemoryBrainPlugin(Star):
             self._strip_audio(req)
             self._maybe_correction(event)
             self._capture_raw(event)
+            await self._maybe_intention(event)
             self._capture_working(event)
             self._maybe_learn_skill(event)
             self._maybe_caption_images(event)
@@ -360,11 +370,38 @@ class MemoryBrainPlugin(Star):
 
     _GENERIC = {"在吗", "在不在", "嗯", "哦", "好", "好吧", "早安", "晚安", "哈哈", "哈", "?", "？", "...", "……"}
 
+    @staticmethod
+    def _time_window(text: str) -> tuple[float, float, str] | None:
+        """把“早上/昨天/刚才”翻成时间范围，用于按时间补召回。"""
+        now = datetime.datetime.now()
+        day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        t = text or ""
+        if "刚才" in t or "刚刚" in t:
+            return ((now - datetime.timedelta(hours=2)).timestamp(), (now + datetime.timedelta(minutes=1)).timestamp(), "刚才")
+        if "昨天" in t or "昨晚" in t:
+            base = day - datetime.timedelta(days=1)
+            if "晚" in t:
+                return ((base + datetime.timedelta(hours=18)).timestamp(), (base + datetime.timedelta(days=1)).timestamp(), "昨晚")
+            return (base.timestamp(), (base + datetime.timedelta(days=1)).timestamp(), "昨天")
+        if "今早" in t or "早上" in t or "上午" in t:
+            return ((day + datetime.timedelta(hours=5)).timestamp(), (day + datetime.timedelta(hours=12)).timestamp(), "今天早上")
+        if "中午" in t:
+            return ((day + datetime.timedelta(hours=11)).timestamp(), (day + datetime.timedelta(hours=14)).timestamp(), "今天中午")
+        if "下午" in t:
+            return ((day + datetime.timedelta(hours=12)).timestamp(), (day + datetime.timedelta(hours=18)).timestamp(), "今天下午")
+        if "今晚" in t or "晚上" in t:
+            return ((day + datetime.timedelta(hours=18)).timestamp(), (day + datetime.timedelta(days=1)).timestamp(), "今天晚上")
+        if "今天" in t:
+            return (day.timestamp(), (now + datetime.timedelta(minutes=1)).timestamp(), "今天")
+        return None
+
     async def _memory_block(self, event: AstrMessageEvent) -> str:
         current = (event.get_message_str() or "").strip()
         if not current:
             return ""
+        owner_set = {x.strip() for x in str(self.config.get("owner_names", "")).split(",") if x.strip()}
         is_group = bool(event.get_group_id())
+        is_webchat = "webchat" in str(getattr(event, "unified_msg_origin", "") or "")
         if is_group and not self.inject_in_group:
             return ""
 
@@ -382,7 +419,13 @@ class MemoryBrainPlugin(Star):
             float(self.config.get("recall_min_score_group", 0.45) or 0.45)
             if is_group else self.recall_min_score
         )
-        allow = {"public", "group"} if is_group else {"public", "private"}
+        asks_group = "群" in current
+        if is_group:
+            allow = {"public", "group"}
+        elif is_webchat and asks_group:
+            allow = {"public", "private", "group"}
+        else:
+            allow = {"public", "private"}
         hits = self.engine.recall(
             query, k=k, query_vec=vec,
             rerank=bool(self.config.get("rerank", True)),
@@ -391,17 +434,133 @@ class MemoryBrainPlugin(Star):
         )
         # 分数太低的宁可不注入：省 token，也减少“乱提旧事”
         hits = [h for h in hits if float(h.get("score", 0)) >= min_score]
-        if not hits:
+        raw_notes: list[tuple[float, str]] = []
+        tw = self._time_window(query)
+        if tw:
+            start, end, label = tw
+            pool = self.store.memories_in_range(start, end, allow, limit=8, kinds=("episode", "reflection"))
+            extra = [m for m in pool if "发的图" not in str(m.get("text") or "")][:3]
+            if not extra:
+                extra = pool[:3]
+            if is_group:
+                raw_all = self.store.raw_between(start, end, limit=8, session_like="%GroupMessage%")
+                raw_notes = raw_all
+            elif is_webchat:
+                like = "%GroupMessage%" if asks_group else "%FriendMessage%"
+                raw_all = self.store.raw_between(start, end, limit=12, session_like=like)
+                raw_notes = [r for r in raw_all if not owner_set or r[1] in owner_set][:6]
+            else:
+                raw_all = self.store.raw_between(start, end, limit=8, session_like="%FriendMessage%")
+                raw_notes = [r for r in raw_all if not owner_set or r[1] in owner_set][:6]
+            if extra:
+                seen = {int(h["id"]) for h in hits}
+                kk = k if is_group else max(k, 3)
+                hits = ([{**m, "score": 1.0, "time_label": label} for m in extra]
+                        + [h for h in hits if int(h["id"]) not in seen])[:kk]
+        reading = ""
+        try:
+            prog = json.loads((Path(__file__).resolve().parents[4] / "life" / "book_progress.json").read_text(encoding="utf-8"))
+            if str(prog.get("book") or "").strip():
+                off = int(prog.get("offset") or 0)
+                total = int(prog.get("total") or 0)
+                pct = (off / total * 100) if total else 0
+                tail = f"，约 {pct:.0f}%，还没读完" if total and pct < 95 else ""
+                reading = (f"【最近在读】《{prog['book']}》{prog.get('chapter') or ''}，"
+                           f"已读约 {off} 字{tail}")
+        except Exception:
+            reading = ""
+        if not hits and not reading:
             return ""
-        lines = [MARKER, "以下是和当前话题相关的旧记忆，用来接话，别逐条复述："]
-        for i, h in enumerate(hits, 1):
-            stamp = time.strftime("%m-%d", time.localtime(float(h.get("created_at") or time.time())))
-            lines.append(f"{i}. [{stamp}] {h['text'][:160]}")
+
+        today = time.localtime()
+        lines = [MARKER]
+        if reading:
+            lines.append(reading)
+        if hits:
+            lines.append("以下是和当前话题相关的旧记忆，用来接话，别逐条复述：")
+            for i, h in enumerate(hits, 1):
+                ts = float(h.get("created_at") or time.time())
+                dt = time.localtime(ts)
+                days = (datetime.date(today.tm_year, today.tm_mon, today.tm_mday)
+                        - datetime.date(dt.tm_year, dt.tm_mon, dt.tm_mday)).days
+                rel = "今天" if days == 0 else ("昨天" if days == 1 else f"{days}天前")
+                stamp = time.strftime("%Y-%m-%d", dt)
+                lines.append(f"{i}. [{stamp} · {rel}] {h['text'][:160]}")
+        if raw_notes:
+            lines.append("你当时说的原话（按时间）：")
+            for ts, sender, txt in raw_notes:
+                who = "你" if (not owner_set or sender in owner_set) else (sender or "某人")
+                lines.append(f"- [{time.strftime('%H:%M', time.localtime(ts))}] {who}：{txt[:80]}")
         block = "\n".join(lines)
         self._last_hits[key] = [int(h["id"]) for h in hits]
         self.store.bump_daily("记忆注入")
         logger.info(f"[brain] 注入记忆 {len(hits)} 条（{len(block)} 字）")
         return block
+
+    async def _maybe_intention(self, event: AstrMessageEvent) -> None:
+        """识别“明天三点提醒我”这类话，存成带到期时间的提醒。"""
+        try:
+            text = (event.get_message_str() or "").strip()
+            if len(text) < 6 or text.startswith("/"):
+                return
+            parsed = intention.parse(text)
+            if not parsed:
+                return
+            due, task, when = parsed
+            for m in self.store.list_memories(kind="intention", limit=100):
+                meta = m.get("meta") or {}
+                if not meta.get("done") and str(m.get("text") or "") == task:
+                    return
+            umo = str(event.unified_msg_origin)
+            vec = await self._embed(task)
+            mid = self.store.insert_memory(
+                text=task, kind="intention", importance=0.9, source="intention",
+                visibility="group" if event.get_group_id() else "private",
+                meta={"due_at": float(due), "done": False, "when": when, "umo": umo},
+                vector=vec,
+            )
+            logger.info(f"[brain] 记下提醒 #{mid}：{when} {task[:30]}")
+        except Exception:
+            logger.debug("[brain] 提醒识别失败", exc_info=True)
+
+    async def _reminder_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await self._fire_reminders()
+            except Exception:
+                logger.debug("[brain] 提醒检查失败", exc_info=True)
+
+    async def _fire_reminders(self) -> None:
+        now = time.time()
+        for m in self.store.list_memories(kind="intention", limit=200):
+            meta = dict(m.get("meta") or {})
+            if meta.get("done"):
+                continue
+            due = float(meta.get("due_at") or 0)
+            if not due or due > now:
+                continue
+            umo = str(meta.get("umo") or "")
+            mid = int(m["id"])
+            if not umo:
+                meta["done"] = True
+                self.store.set_meta(mid, meta)
+                continue
+            try:
+                await self.context.send_message(
+                    umo, MessageChain([Plain(f"你之前让我提醒你：{m['text']}")])
+                )
+                meta["done"] = True
+                meta["fired_at"] = now
+                self.store.set_meta(mid, meta)
+                self.store.conn.commit()
+                logger.info(f"[brain] 发出提醒 #{mid}")
+            except Exception:
+                meta["attempts"] = int(meta.get("attempts", 0)) + 1
+                if meta["attempts"] >= 3:
+                    meta["done"] = True
+                self.store.set_meta(mid, meta)
+                self.store.conn.commit()
 
     def _capture_raw(self, event: AstrMessageEvent) -> None:
         """留一份真人原话，用来统计语感（不参与记忆检索）。"""
@@ -434,6 +593,8 @@ class MemoryBrainPlugin(Star):
                 "bot",
                 keep=int(self.config.get("raw_keep", 2000) or 2000),
             )
+            # 面板用：她说这句话期间点亮神经网络
+            self._activity_until = time.time() + min(8.0, max(2.0, len(text) / 7.0))
         except Exception:
             logger.debug("[brain] 回复采集失败", exc_info=True)
 
@@ -441,7 +602,6 @@ class MemoryBrainPlugin(Star):
     def _mood_valence() -> float | None:
         """读角色心情，用来做情绪一致检索；读不到就不偏。"""
         try:
-            import json
             data = json.loads(MOOD_FILE.read_text(encoding="utf-8"))
             return max(-1.0, min(1.0, float(data.get("valence", 0)) / 100.0))
         except Exception:
@@ -863,6 +1023,7 @@ class MemoryBrainPlugin(Star):
         if not self.inject_style:
             return ""
         is_group = bool(event.get_group_id())
+        is_webchat = "webchat" in str(getattr(event, "unified_msg_origin", "") or "")
         if is_group and not bool(self.config.get("style_in_group", False)):
             return ""
         # 只取「同一个会话」里对方的原话，避免把别人的私聊说法带进来
@@ -958,6 +1119,9 @@ class MemoryBrainPlugin(Star):
                 float(self.config.get("decay_rate", 0.01) or 0.01),
                 access_boost=float(self.config.get("access_decay_boost", 0.5) or 0.5),
                 access_window_days=float(self.config.get("access_window_days", 30) or 30),
+                protect_names=[x.strip() for x in str(self.config.get("protect_names", "")).split(",") if x.strip()],
+                core_floor=float(self.config.get("core_floor", 0.45) or 0.45),
+                emotion_factor=float(self.config.get("emotion_decay_factor", 0.4) or 0.4),
             )
             archived = self.engine.archive(
                 importance_below=float(self.config.get("archive_below", 0.3) or 0.3),
@@ -978,6 +1142,7 @@ class MemoryBrainPlugin(Star):
             profiles = await self._generate_profiles()
             reflections = await self._generate_reflection()
             facts = await self._generate_facts()
+            self._backup_memory()
             logger.info(
                 f"[brain] 衰减 {affected} 条，归档 {archived} 条；"
                 f"睡觉整理：实体并 {result['entities_merged']}、记忆并 {result['memories_merged']}；"
@@ -986,6 +1151,35 @@ class MemoryBrainPlugin(Star):
             )
         except Exception:
             logger.exception("[brain] 每日维护失败")
+
+    def _backup_memory(self, keep: int = 7) -> None:
+        """每日备份：记忆库 + 情绪状态 + 生活层，保留最近 keep 份。"""
+        import shutil
+        import sqlite3
+
+        try:
+            root = Path(__file__).resolve().parents[2] / "backup" / "brain"
+            dst = root / time.strftime("%Y%m%d-%H%M")
+            dst.mkdir(parents=True, exist_ok=True)
+            out = sqlite3.connect(str(dst / "brain.db"))
+            self.store.conn.backup(out)
+            out.close()
+            data = Path(__file__).resolve().parents[2]
+            for name in ("mood.json", "affinity.json", "emotional.json", "core_memory.json"):
+                src = data / "plugin_data" / "astrbot_plugin_persona_state" / name
+                if src.exists():
+                    shutil.copy2(src, dst / name)
+            life = Path(__file__).resolve().parents[4] / "life"
+            for name in ("interests.json", "book_progress.json", "goals.json", "soul.md"):
+                src = life / name
+                if src.exists():
+                    shutil.copy2(src, dst / name)
+            backups = sorted([p for p in root.iterdir() if p.is_dir()])
+            for old in backups[:-keep]:
+                shutil.rmtree(old, ignore_errors=True)
+            logger.info(f"[brain] 已备份到 {dst.name}")
+        except Exception:
+            logger.exception("[brain] 备份失败")
 
     async def _generate_reflection(self, force_day: float | None = None) -> int:
         """给「最近几天的某一天」写一篇今日三件事；同一天只写一次。"""
@@ -1192,9 +1386,10 @@ class MemoryBrainPlugin(Star):
                 self.engine.remember(
                     note["text"],
                     kind="fact",
-                    importance=0.6,
+                    importance=0.7 if note["kind"] in ("book", "study") else 0.6,
                     source="life",
-                    visibility="private",
+                    # 读书/学习笔记两边都能想起来；日记/午睡这类只留在私聊
+                    visibility="public" if note["kind"] in ("book", "study") else "private",
                     meta={"ts": key, "kind": note["kind"], "date": note["date"]},
                     vector=vec,
                 )
@@ -1208,7 +1403,52 @@ class MemoryBrainPlugin(Star):
             added += 1
         if added:
             logger.info(f"[brain] 生活笔记导入 {added} 条")
+        try:
+            await self._update_reading_state()
+        except Exception:
+            logger.debug("[brain] 阅读状态更新失败", exc_info=True)
         return added
+
+    async def _update_reading_state(self) -> None:
+        """把“最近在读哪本书、读到哪”维护成一条会自己更新的记忆。"""
+        import json as _json
+
+        life = Path(__file__).resolve().parents[4] / "life"
+        prog_path = life / "book_progress.json"
+        try:
+            prog = _json.loads(prog_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        book = str(prog.get("book") or "").strip()
+        if not book:
+            return
+        offset = int(prog.get("offset") or 0)
+        chapter = str(prog.get("chapter") or "").strip()
+        text = f"最近在读《{book}》" + (f"，读到{chapter}" if chapter else "") + f"，已读约 {offset} 字。"
+        rows = [
+            m for m in self.store.list_memories(limit=500)
+            if str((m.get("meta") or {}).get("kind") or "") == "reading_state"
+        ]
+        vec = await self._embed(text)
+        if rows:
+            mid = int(rows[0]["id"])
+            self.store.conn.execute(
+                "UPDATE memories SET text=?, importance=?, visibility='public' WHERE id=?",
+                (text, 0.75, mid),
+            )
+            self.store.set_vector(mid, vec)
+            meta = dict(rows[0].get("meta") or {})
+            meta.update({"kind": "reading_state", "pin": True, "book": book,
+                         "chapter": chapter, "offset": offset, "updated_at": time.time()})
+            self.store.set_meta(mid, meta)
+        else:
+            self.engine.remember(
+                text, kind="fact", importance=0.75, source="life", visibility="public",
+                meta={"kind": "reading_state", "pin": True, "book": book,
+                      "chapter": chapter, "offset": offset, "updated_at": time.time()},
+                vector=vec,
+            )
+        self.store.conn.commit()
 
     def _detect_conflicts(self) -> int:
         """同一实体的两条事实极性相反时记一笔，注入/后台可查。"""
@@ -1545,6 +1785,9 @@ class MemoryBrainPlugin(Star):
                 float(self.config.get("decay_rate", 0.01) or 0.01),
                 access_boost=float(self.config.get("access_decay_boost", 0.5) or 0.5),
                 access_window_days=float(self.config.get("access_window_days", 30) or 30),
+                protect_names=[x.strip() for x in str(self.config.get("protect_names", "")).split(",") if x.strip()],
+                core_floor=float(self.config.get("core_floor", 0.45) or 0.45),
+                emotion_factor=float(self.config.get("emotion_decay_factor", 0.4) or 0.4),
             )
             archived = self.engine.archive(
                 importance_below=float(self.config.get("archive_below", 0.3) or 0.3),

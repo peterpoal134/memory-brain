@@ -103,8 +103,8 @@ class PageApi:
     def _emotion_labels(self) -> list[dict[str, Any]]:
         try:
             labels = ((self.plugin.mood.data or {}).get("pad") or {}).get("labels") or {}
-            rows = sorted(labels.items(), key=lambda x: -float(x[1]))[:4]
-            return [{"name": k, "score": round(float(v), 2)} for k, v in rows if float(v) >= 0.03]
+            rows = sorted(labels.items(), key=lambda x: -float(x[1]))[:6]
+            return [{"name": k, "score": round(float(v), 2)} for k, v in rows if float(v) >= 0.01]
         except Exception:
             return []
 
@@ -334,6 +334,11 @@ class PageApi:
             for e in self.plugin.emotional.data.get("events", []):
                 if int(e.get("id", -1)) == target:
                     e["resolved"] = True
+                    # 放下不是只从列表消失：也把当前这口气松一点
+                    labels = ((self.plugin.mood.data or {}).get("pad") or {}).get("labels") or {}
+                    for k in ("委屈", "生气", "难过"):
+                        if k in labels:
+                            labels[k] = round(float(labels[k]) * 0.75, 3)
                     self.plugin._save()
                     return _ok({"ok": True})
             return _err("没有这条旧账")

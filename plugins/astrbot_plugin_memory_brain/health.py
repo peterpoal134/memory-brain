@@ -52,6 +52,28 @@ def stale_facts(store, days: int = 120, limit: int = 50) -> list[int]:
     return [int(r["id"]) for r in rows]
 
 
+def cross_visibility(store, threshold: float = 0.85, limit: int = 300) -> list[tuple]:
+    """跨可见性的相似记忆：私聊一套、群聊一套，久了会说法不一。"""
+    rows = store.list_memories(limit=limit)
+    ids, mat = store.all_vectors()
+    index = {int(mid): i for i, mid in enumerate(ids)}
+    rows = [r for r in rows if int(r["id"]) in index]
+    out = []
+    for i in range(len(rows)):
+        a = rows[i]
+        for j in range(i + 1, len(rows)):
+            b = rows[j]
+            if str(a.get("visibility")) == str(b.get("visibility")):
+                continue
+            sim = _cos(mat[index[int(a["id"])]], mat[index[int(b["id"])]])
+            if sim >= threshold:
+                out.append((round(sim, 3), int(a["id"]), a.get("visibility"),
+                            int(b["id"]), b.get("visibility"),
+                            str(a.get("text"))[:40], str(b.get("text"))[:40]))
+    out.sort(reverse=True)
+    return out[:20]
+
+
 def report(store) -> str:
     st = store.stats()
     dup = duplicates(store)
@@ -66,6 +88,11 @@ def report(store) -> str:
         f"低价值旧事实：{len(stale)} 条" + (f"（如 #{stale[0]}）" if stale else ""),
         f"未处理冲突：{len(conflicts)} 组",
     ]
+    cross = cross_visibility(store)
+    lines.append(
+        f"跨可见性相似（≥0.85）：{len(cross)} 组"
+        + (f"，例如 #{cross[0][1]}({cross[0][2]})↔#{cross[0][3]}({cross[0][4]})" if cross else "")
+    )
     return "\n".join(lines)
 
 

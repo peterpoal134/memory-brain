@@ -220,6 +220,33 @@ class MemoryEngine:
                 + W_RECENCY * s_rec
                 + W_GRAPH * s_graph
             )
+            # 用户钉住的事实（账号、称呼、约定）多给一点权重，避免被闲聊挤下去
+            try:
+                import json as _json
+                meta = memory.get("meta") or {}
+                if isinstance(meta, str):
+                    meta = _json.loads(meta)
+                # 钉住只在“问对了”时拉满：身份事实看问法，阅读状态看读书，其余看关键词
+                if meta.get("pin"):
+                    kind = str(meta.get("kind") or "")
+                    q_low = query.lower()
+                    if kind in ("reading_state", "book", "study"):
+                        relevant = any(w in query for w in (
+                            "在读", "读到", "读什么", "读哪", "读的什么", "进度",
+                            "第几章", "翻到哪", "最近读", "看到哪",
+                            "看书", "读书", "读的", "上次看", "看什么书", "读到哪",
+                        ))
+                    elif meta.get("subject"):
+                        relevant = any(w in q_low for w in (
+                            "是谁", "谁是", "谁啊", "叫什么", "叫啥", "昵称", "qq", "账号",
+                            "号码", "名字", "抖音号",
+                        ))
+                    else:
+                        relevant = s_kw >= 0.5 or s_sem >= 0.6
+                    if relevant:
+                        score = max(score, 0.9)
+            except Exception:
+                pass
             if score <= 0:
                 continue
 

@@ -240,6 +240,7 @@ class PersonaStatePlugin(Star):
         is_group = bool(event.get_group_id())
         name = (event.get_sender_name() or "").strip()[:24]
 
+        self._prev_last_msg = float(self.mood.data.get("last_user_msg_at") or 0)
         self._record_energy(now)
         # 先结算“沉默期间的自然衰减”，再取基准值；否则昨晚到今早的衰减
         # 会被算成“这条消息让她掉了 30 点心情”，误记成委屈/旧账。
@@ -399,6 +400,15 @@ class PersonaStatePlugin(Star):
                 f"对「{av['name']}」的好感 {_fmt(av['score'])}/100（{av['level']}），"
                 f"累计聊过 {av['msgs']} 句；今天聊了 {view['day_msgs']} 句"
             )
+        prev = float(getattr(self, "_prev_last_msg", 0) or 0)
+        if prev > 0:
+            gap_h = max(0.0, (now - prev) / 3600.0)
+            when = time.strftime("%m-%d %H:%M", time.localtime(prev))
+            if gap_h >= 1:
+                if gap_h < 24:
+                    lines.append(f"距上次聊天 {gap_h:.0f} 小时（上次是 {when}）")
+                else:
+                    lines.append(f"距上次聊天 {gap_h / 24:.0f} 天（上次是 {when}）")
         try:
             mood_line = emotion.describe(self.mood.data)
             mood_hint = emotion.hint(self.mood.data)
