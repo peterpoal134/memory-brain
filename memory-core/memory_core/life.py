@@ -78,6 +78,8 @@ class LifeService:
         if s.get("curiosity", 0) > 0.65 and random.random() < 0.5:
             return "book"
         choices = [a for a in ("idle", "rest", "reflect", "book", "phone") if self.cfg["weights"].get(a, 1) > 0]
+        if not choices:
+            return "idle"
         weights = [float(self.cfg["weights"].get(a, 1)) for a in choices]
         return random.choices(choices, weights=weights, k=1)[0]
 
