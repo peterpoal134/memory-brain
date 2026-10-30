@@ -174,6 +174,13 @@ python -m memory_core.server
 
 不设 `MEMORY_AGENT_KEEP_SYSTEM` 时，才会用配置里的 `system_prompt`。
 
+## 平台接入
+
+- [AstrBot](../docs/astrbot.md)
+- [qqbridge](docs/qqbridge.md)
+- [DSH / 桌面窗口](docs/dsh.md)
+- 最小客户端：[examples/openai_client.py](examples/openai_client.py)
+
 ## 说明
 
 - 这是从 AstrBot 插件版抽出的核心，不包含人格、情绪、表达层
