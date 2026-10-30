@@ -105,6 +105,14 @@ api_key  = local-token
 model    = memory-core
 ```
 
+请求体必须带 `user`（或 `user_id` / `session_id`），不能再让所有人落到 `default`：
+
+```json
+{"user":"telegram:123","messages":[...]}
+```
+
+不传会返回 400。
+
 默认只加记忆。要在同一个入口上叠加人格/情绪，启动时加：
 
 ```bash
