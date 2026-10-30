@@ -7,10 +7,13 @@ import time
 
 
 class ContextCompressor:
-    def __init__(self, memory, budget_chars: int = 12000, keep_recent: int = 10):
+    def __init__(self, memory, budget_chars: int = 20000, keep_recent: int = 10,
+                 max_turns: int = 24, keep_ratio: float = 0.15):
         self.memory = memory
         self.budget = max(2000, int(budget_chars))
         self.keep = max(2, int(keep_recent))
+        self.max_turns = max(1, int(max_turns))
+        self.keep_ratio = max(0.05, min(0.5, float(keep_ratio)))
         self.conn = memory.store.conn
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS ctx_summary (
@@ -36,13 +39,14 @@ class ContextCompressor:
     def compress(self, messages: list[dict], key: str = "default") -> list[dict]:
         msgs = [m for m in messages if isinstance(m, dict)]
         total = sum(len(str(m.get("content") or "")) for m in msgs)
-        if total <= self.budget:
-            return msgs
         system = [m for m in msgs if m.get("role") == "system"]
         convo = [m for m in msgs if m.get("role") != "system"]
-        if len(convo) <= self.keep:
+        if total <= self.budget and len(convo) <= self.max_turns * 2:
             return msgs
-        old, recent = convo[:-self.keep], convo[-self.keep:]
+        keep = max(self.keep, int(len(convo) * self.keep_ratio))
+        if len(convo) <= keep:
+            return msgs
+        old, recent = convo[:-keep], convo[-keep:]
         old_text = "\n".join(f"{m.get('role')}: {m.get('content')}" for m in old)[-16000:]
         prev = self._cache(key)
         text = (("已有摘要：\n" + prev + "\n\n") if prev else "") + "新增对话：\n" + old_text

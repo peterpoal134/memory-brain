@@ -43,8 +43,10 @@ LLM_KEY = os.environ.get("MEMORY_LLM_KEY", "")
 LLM_MODEL = os.environ.get("MEMORY_LLM_MODEL", "deepseek-chat")
 AUTO_REMEMBER = os.environ.get("MEMORY_AUTO_REMEMBER", "0") == "1"
 COMPRESS = os.environ.get("MEMORY_COMPRESS", "1") != "0"
-COMPRESS_CHARS = int(os.environ.get("MEMORY_COMPRESS_CHARS", "12000"))
+COMPRESS_CHARS = int(os.environ.get("MEMORY_COMPRESS_CHARS", "20000"))
 COMPRESS_KEEP = int(os.environ.get("MEMORY_COMPRESS_KEEP", "10"))
+COMPRESS_TURNS = int(os.environ.get("MEMORY_COMPRESS_TURNS", "24"))
+COMPRESS_RATIO = float(os.environ.get("MEMORY_COMPRESS_KEEP_RATIO", "0.15"))
 
 
 _EMBED_DOWN_UNTIL = 0.0
@@ -368,7 +370,8 @@ def agent() -> AgentService:
 def compressor() -> ContextCompressor:
     global COMPRESSOR
     if COMPRESSOR is None:
-        COMPRESSOR = ContextCompressor(service(), COMPRESS_CHARS, COMPRESS_KEEP)
+        COMPRESSOR = ContextCompressor(service(), COMPRESS_CHARS, COMPRESS_KEEP,
+                                       COMPRESS_TURNS, COMPRESS_RATIO)
     return COMPRESSOR
 
 
