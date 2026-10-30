@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from .agent import AgentService
+from .life import LifeService
 from .engine import MemoryEngine
 from .store import Store
 
@@ -317,6 +318,7 @@ class MemoryService:
 
 SERVICE: MemoryService | None = None
 AGENT: AgentService | None = None
+LIFE: LifeService | None = None
 
 
 def service() -> MemoryService:
@@ -331,6 +333,13 @@ def agent() -> AgentService:
     if AGENT is None:
         AGENT = AgentService(service(), os.environ.get("AGENT_CONFIG"))
     return AGENT
+
+
+def life() -> LifeService:
+    global LIFE
+    if LIFE is None:
+        LIFE = LifeService(service(), os.environ.get("LIFE_CONFIG") or os.environ.get("AGENT_CONFIG"))
+    return LIFE
 
 
 def openai_agent(data: dict) -> dict:
@@ -410,6 +419,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"status": "ok", "data": service().graph()})
             except Exception as exc:
                 self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path == "/life/state":
+            try:
+                self._send(200, {"status": "ok", "data": life().state()})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path.startswith("/life/events"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                after = int((q.get("after") or ["0"])[0])
+                pending = (q.get("pending") or ["0"])[0] == "1"
+                self._send(200, {"status": "ok", "data": life().events(after, include_delivered=not pending)})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
         elif self.path.startswith("/reminders/due"):
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
@@ -460,7 +483,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
-            if self.path == "/v1/agent/chat/completions":
+            if self.path == "/life/step":
+                with service().lock:
+                    out = life().step(data.get("force") or None)
+                self._send(200, {"status": "ok", "data": out})
+            elif self.path == "/life/ack":
+                self._send(200, {"status": "ok", "data": {"done": life().ack(int(data.get("id") or 0))}})
+            elif self.path == "/v1/agent/chat/completions":
                 self._send(200, openai_agent(data))
             elif self.path == "/agent/chat":
                 self._send(200, {"status": "ok", "data": agent().chat(data)})
@@ -527,6 +556,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     Path(DB).parent.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("LIFE_AUTO") == "1":
+        import threading
+        from .life import run_loop
+
+        threading.Thread(target=run_loop, args=(life(),), daemon=True).start()
     print(f"[memory-core] db={DB} listen=http://{HOST}:{PORT}", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 

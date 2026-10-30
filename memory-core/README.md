@@ -170,3 +170,31 @@ python -m memory_core.server
 
 - 这是从 AstrBot 插件版抽出的核心，不包含人格、情绪、表达层
 - 人格/情绪仍在原插件里；这里只负责记忆
+
+## 生活层（可选）
+
+不绑定平台，只产出“她做了什么”的事件，由你的桥决定发不发。
+
+```bash
+LIFE_AUTO=1 LIFE_CONFIG=./config.example.json python -m memory_core.server
+```
+
+接口：
+
+```bash
+# 看状态
+curl http://127.0.0.1:8780/life/state
+
+# 手动让她过一个动作（调试用）
+curl -X POST http://127.0.0.1:8780/life/step -H 'Content-Type: application/json' -d '{"force":"book"}'
+
+# 拉事件
+curl 'http://127.0.0.1:8780/life/events?after=0&pending=1'
+
+# 标记已处理
+curl -X POST http://127.0.0.1:8780/life/ack -H 'Content-Type: application/json' -d '{"id":1}'
+```
+
+动作：发呆、休息、看书、刷手机、反思、午睡。看书需要在配置里给 `books_dir`。
+
+和 AstrBot 生活层的区别：这里不直接发 QQ，事件交给客户端。
