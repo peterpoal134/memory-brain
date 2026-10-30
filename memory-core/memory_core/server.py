@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from .agent import AgentService
+from .compress import ContextCompressor
 from .eval import EvalService
 from .life import LifeService
 from .engine import MemoryEngine
@@ -41,6 +42,9 @@ LLM_BASE = os.environ.get("MEMORY_LLM_BASE", "").rstrip("/")
 LLM_KEY = os.environ.get("MEMORY_LLM_KEY", "")
 LLM_MODEL = os.environ.get("MEMORY_LLM_MODEL", "deepseek-chat")
 AUTO_REMEMBER = os.environ.get("MEMORY_AUTO_REMEMBER", "0") == "1"
+COMPRESS = os.environ.get("MEMORY_COMPRESS", "1") != "0"
+COMPRESS_CHARS = int(os.environ.get("MEMORY_COMPRESS_CHARS", "12000"))
+COMPRESS_KEEP = int(os.environ.get("MEMORY_COMPRESS_KEEP", "10"))
 
 
 _EMBED_DOWN_UNTIL = 0.0
@@ -173,6 +177,29 @@ class MemoryService:
             "entities": [int(x) for x in str(r["ents"] or "").split(",") if x.strip()],
         } for r in rows]
         return {"nodes": nodes, "edges": edges, "memories": memories}
+
+    def summarize(self, text: str) -> str:
+        """用上游模型压缩一段旧对话；不注入记忆，避免递归。"""
+        if not LLM_BASE:
+            return ""
+        payload = {
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": "把下面的旧对话压缩成 200 字以内的摘要，保留人物、事实、约定和未完成的事。只输出摘要。"},
+                {"role": "user", "content": str(text or "")[:16000]},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 320,
+        }
+        req = urllib.request.Request(
+            LLM_BASE + "/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {LLM_KEY}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            out = json.loads(r.read().decode())
+        return str(out["choices"][0]["message"]["content"] or "")
 
     @_locked
     def add_reminder(self, data: dict) -> dict:
@@ -321,6 +348,7 @@ SERVICE: MemoryService | None = None
 AGENT: AgentService | None = None
 LIFE: LifeService | None = None
 EVAL: EvalService | None = None
+COMPRESSOR: ContextCompressor | None = None
 
 
 def service() -> MemoryService:
@@ -335,6 +363,13 @@ def agent() -> AgentService:
     if AGENT is None:
         AGENT = AgentService(service(), os.environ.get("AGENT_CONFIG"))
     return AGENT
+
+
+def compressor() -> ContextCompressor:
+    global COMPRESSOR
+    if COMPRESSOR is None:
+        COMPRESSOR = ContextCompressor(service(), COMPRESS_CHARS, COMPRESS_KEEP)
+    return COMPRESSOR
 
 
 def eval_service() -> EvalService:
@@ -353,18 +388,19 @@ def life() -> LifeService:
 
 def openai_agent(data: dict) -> dict:
     msgs = data.get("messages") or []
+    if COMPRESS and msgs:
+        base = next((str(m.get("content") or "") for m in msgs if m.get("role") == "system"), "")
+        msgs = compressor().compress(msgs, ContextCompressor.key_for(str(data.get("user") or "default"), base))
     text = ""
     for m in reversed(msgs):
         if m.get("role") == "user":
             text = str(m.get("content") or "")
             break
     msgs = data.get("messages") or []
-    base_system = ""
+    base_system = "\n\n".join(str(m.get("content") or "") for m in msgs if m.get("role") == "system")
     history = []
     last_user = -1
     for i, m in enumerate(msgs):
-        if m.get("role") == "system" and not base_system:
-            base_system = str(m.get("content") or "")
         if m.get("role") == "user":
             last_user = i
     for i, m in enumerate(msgs):
@@ -557,6 +593,10 @@ class Handler(BaseHTTPRequestHandler):
                         except Exception:
                             pass
                 else:
+                    if COMPRESS and data.get("messages"):
+                        data = dict(data)
+                        base = next((str(m.get("content") or "") for m in data["messages"] if m.get("role") == "system"), "")
+                        data["messages"] = compressor().compress(data["messages"], ContextCompressor.key_for(str(data.get("user") or "default"), base))
                     self._send(200, service().chat(data))
             elif self.path == "/reminder":
                 self._send(200, {"status": "ok", "data": service().add_reminder(data)})
