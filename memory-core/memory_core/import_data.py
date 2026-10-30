@@ -49,28 +49,29 @@ def import_brain(src_path: str, dst_path: str, limit: int = 0) -> dict:
     except Exception:
         pass
     for r in rows:
-        text = str(r["text"] or "").strip()
+        row = dict(r)
+        text = str(row.get("text") or "").strip()
         if not text or text in existing:
             skipped += 1
             continue
         try:
-            meta = json.loads(r["meta"] or "{}")
+            meta = json.loads(row.get("meta") or "{}")
         except Exception:
             meta = {}
-        vec = _vector(src, int(r["id"]))
+        vec = _vector(src, int(row.get("id")))
         mid = dst.insert_memory(
             text=text,
-            kind=str(r["kind"] or "episode"),
-            importance=float(r["importance"] or 0.5),
-            valence=float(r["valence"] or 0),
-            arousal=float(r["arousal"] or 0),
-            source=str(r["source"] or "import"),
+            kind=str(row.get("kind") or "episode"),
+            importance=float(row.get("importance") or 0.5),
+            valence=float(row.get("valence") or 0),
+            arousal=float(row.get("arousal") or 0),
+            source=str(row.get("source") or "import"),
             meta=meta,
             vector=vec,
-            created_at=float(r["created_at"] or time.time()),
-            visibility=str(r["visibility"] or "public"),
+            created_at=float(row.get("created_at") or time.time()),
+            visibility=str(row.get("visibility") or "public"),
         )
-        id_map[int(r["id"])] = mid
+        id_map[int(row.get("id"))] = mid
         existing.add(text)
         added += 1
     linked = 0
