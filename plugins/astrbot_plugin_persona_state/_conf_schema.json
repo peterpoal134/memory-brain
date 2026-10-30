@@ -1,0 +1,56 @@
+{
+  "allowed_ids": {
+    "description": "被授权的人",
+    "hint": "格式 \"QQ号:称呼, QQ号:称呼\"。只有这些人能写识海、看好感榜、用私密命令。留空则谁都不能写。",
+    "type": "string",
+    "default": ""
+  },
+  "floors": {
+    "description": "好感度下限",
+    "hint": "格式 \"QQ号:下限, QQ号:下限\"。给最重要的人设下限，久不联系也不会掉穿。",
+    "type": "string",
+    "default": ""
+  },
+  "grudge": {
+    "description": "记仇程度 0-100",
+    "hint": "越高，受委屈时越容易想起旧账（同话题约 45%-60%，只是情绪差约 15%-20%）。",
+    "type": "int",
+    "default": 45
+  },
+  "inject": {
+    "description": "注入状态到提示词",
+    "hint": "关闭后只记录不注入（面板照常可看）。",
+    "type": "bool",
+    "default": true
+  },
+  "inject_in_group": {
+    "description": "群里也注入",
+    "hint": "关闭后群聊不显示状态和识海，私聊照旧。",
+    "type": "bool",
+    "default": true
+  },
+  "capture_in_group": {
+    "description": "群里也捕获「永远记住」",
+    "hint": "开启后群里说「永远记住」也会写进识海，但不会叫醒机器人。",
+    "type": "bool",
+    "default": true
+  },
+  "emotional_memory": {
+    "description": "启用情绪记忆（旧账）",
+    "hint": "情绪波动够大才记，平时不注入，只在下一次类似情绪/话题时有概率想起。",
+    "type": "bool",
+    "default": true
+  },
+  "enable_tools": {
+    "description": "允许她自调情绪和好感",
+    "hint": "注册 adjust_mood / adjust_affinity 两个工具。",
+    "type": "bool",
+    "default": true
+  },
+  "core_max_chars": {
+    "description": "识海注入字数上限",
+    "hint": "默认 2400，约 1.2k-2k token。超出会折叠并在注入里注明。",
+    "type": "int",
+    "default": 2400
+  }
+}

@@ -1,0 +1,8 @@
+name: astrbot_plugin_self_style
+display_name: 自我档案与语气样例
+desc: 注入角色自己的喜好、最近状态和真人语气样例，并允许管理员更新
+version: v1.0.0
+author: community
+support_platforms:
+  - aiocqhttp
+  - webchat

@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>记忆大脑</title>
+<style>
+  :root{
+    --bg:#0b0e15; --card:#141822; --fg:#e7e9f0; --muted:#8b93a7;
+    --line:#1a2a33; --accent:#00e5ff;
+    --person:#00e5ff; --place:#39ff8f; --thing:#ffb020; --topic:#b967ff; --skill:#ff3d81;
+    --core:#eafcff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:radial-gradient(circle at 50% 40%,#0f1523 0%,var(--bg) 60%);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;overflow:hidden}
+  .wrap{display:flex;flex-direction:column;height:100vh;padding:10px;gap:8px}
+  header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;letter-spacing:1.5px;color:#bff8ff;
+    text-shadow:0 0 14px rgba(0,229,255,.45);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .stats{display:flex;gap:10px;color:var(--muted);font-size:11px;flex-wrap:wrap;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3px}
+  .stats b{color:var(--fg);font-weight:600}
+  .grow{flex:1}
+  button{font:inherit;cursor:pointer;border-radius:3px;border:1px solid var(--line);
+    background:rgba(8,16,22,.9);color:var(--fg);padding:3px 9px;font-size:12px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.4px}
+  button:hover{border-color:rgba(0,229,255,.45);color:#bff8ff}
+  button.primary{background:rgba(0,229,255,.14);border-color:rgba(0,229,255,.5);color:#bff8ff}
+  button.on{background:rgba(0,229,255,.16);border-color:var(--accent);color:#bff8ff;
+    box-shadow:0 0 12px rgba(0,229,255,.25)}
+  .main{display:flex;gap:8px;flex:1;min-height:0}
+  .canvas-box{position:relative;flex:1;background:radial-gradient(circle at 50% 45%,rgba(0,60,90,0.30) 0%,rgba(4,8,12,0.92) 70%);border:1px solid rgba(0,229,255,.16);border-radius:6px;overflow:hidden;
+    box-shadow:inset 0 0 90px rgba(0,180,220,.10), 0 0 30px rgba(0,229,255,.05)}
+  .canvas-box::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(0,229,255,.012) 0 1px, transparent 1px 5px)}
+  .canvas-box::before{content:"";position:absolute;inset:7px;pointer-events:none;
+    border:1px solid rgba(0,229,255,.12);border-radius:3px}
+  canvas{display:block;width:100%;height:100%;cursor:grab}
+  canvas.dragging{cursor:grabbing}
+  .hint{position:absolute;left:10px;bottom:8px;color:var(--muted);font-size:10px;pointer-events:none;opacity:.7}
+  .legend{position:absolute;left:12px;top:10px;display:flex;gap:9px;color:var(--muted);font-size:10px;flex-wrap:wrap;pointer-events:none;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.85}
+  .dot{box-shadow:0 0 6px currentColor}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:3px;vertical-align:middle}
+  .side{width:290px;display:flex;flex-direction:column;gap:8px;min-height:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px;min-height:0}
+  .card h2{font-size:11px;color:var(--muted);margin:0 0 6px;font-weight:600;letter-spacing:.04em}
+  .search{display:flex;gap:5px}
+  .search input{flex:1;padding:4px 7px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--fg);font-size:12px}
+  .list{overflow:auto;max-height:100%}
+  .mem{padding:5px 0;border-bottom:1px solid var(--line)}
+  .mem:last-child{border-bottom:none}
+  .mem .t{line-height:1.4;word-break:break-word;font-size:12px}
+  .mem .m{color:var(--muted);font-size:10px;margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .tag{padding:0 5px;border-radius:99px;background:#1e2432;color:var(--muted);font-size:9px}
+  .del{color:#ff7a7a;cursor:pointer;background:none;border:none;padding:0;font-size:10px}
+  .profile{border-left:2px solid var(--accent);padding:1px 0 1px 7px;margin:0 0 6px;font-size:12px;line-height:1.45}
+  .profile .h{color:var(--muted);font-size:10px;margin-bottom:2px}
+  .empty{color:var(--muted);padding:6px 0;font-size:12px}
+  .toast{position:fixed;right:14px;bottom:14px;background:var(--card);border:1px solid var(--line);
+    padding:6px 12px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);opacity:0;transition:.2s;font-size:12px;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>记忆大脑</h1>
+    <div class="stats" id="stats">加载中…</div>
+    <div class="grow"></div>
+    <button id="mode" title="切换 2D / 3D">2D</button>
+    <button id="reload">重载</button>
+    <button id="changes">变化</button>
+    <button id="eval">评估</button>
+    <button id="reflect">反思</button>
+    <button id="abstract">沉淀</button>
+    <button id="sleep">睡觉</button>
+    <button id="maintain">维护</button>
+    <button id="health">体检</button>
+    <button id="conflicts">冲突</button>
+    <button id="forget">忘记</button>
+  </header>
+
+  <div class="main">
+    <div class="canvas-box">
+      <canvas id="graph"></canvas>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--core)"></i>核心</span>
+        <span><i class="dot" style="background:var(--person)"></i>人物</span>
+        <span><i class="dot" style="background:var(--place)"></i>地点</span>
+        <span><i class="dot" style="background:var(--thing)"></i>物件</span>
+        <span><i class="dot" style="background:var(--topic)"></i>话题</span>
+        <span><i class="dot" style="background:var(--skill)"></i>技能</span>
+        <span><i class="dot" style="background:#4fd6ff"></i>记忆</span>
+      </div>
+      <div class="hint" id="hint">拖拽旋转 · 滚轮缩放 · 点节点看记忆 · v9（发呆有光点）</div>
+    </div>
+
+    <div class="side">
+      <div class="card">
+        <h2>检索</h2>
+        <div class="search">
+          <input id="q" placeholder="搜一条记忆，比如：最近在忙什么" />
+          <button class="primary" id="search">搜</button>
+        </div>
+        <div class="list" id="results" style="margin-top:6px;max-height:180px"></div>
+      </div>
+      <div class="card" style="flex:1;display:flex;flex-direction:column">
+        <h2 id="side-title">最近记忆</h2>
+        <div class="profile" id="profile" hidden></div>
+        <div class="list" id="memories" style="flex:1"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  // AstrBot 把页面桥的脚本注入在页面末尾，要等它出现
+  var view = null;
+
+  function bridgeNow() { return window.AstrBotPluginView || window.AstrBotPluginPage || null; }
+
+  async function waitBridge(timeoutMs) {
+    var deadline = Date.now() + (timeoutMs || 8000);
+    while (Date.now() < deadline) {
+      var b = bridgeNow();
+      if (b) return b;
+      await new Promise(function (r) { setTimeout(r, 60); });
+    }
+    return null;
+  }
+
+  var speakingUntil = 0, speaking = false, idleNext = 0, idleFireNext = 0;
+  async function pollActivity() {
+    try {
+      var d = await call('page/activity');
+      speakingUntil = Number(d.until || 0);
+    } catch (e) {}
+    speaking = (Date.now() / 1000) < speakingUntil;
+    setTimeout(pollActivity, 1200);
+  }
+
+  function toast(msg) {
+    var el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t = setTimeout(function () { el.classList.remove('show'); }, 1800);
+  }
+
+  async function call(path, body) {
+    if (!view) throw new Error('页面桥未加载');
+    var res = body ? await view.apiPost(path, body) : await view.apiGet(path, {});
+    if (res && res.status === 'ok') return res.data;
+    if (res && res.status === 'error') throw new Error(res.message || '请求失败');
+    return res;
+  }
+
+  // ---------------------------------------------------------------- 3D 场景
+
+  var canvas = document.getElementById('graph');
+  var ctx = canvas.getContext('2d');
+  var W = 0, H = 0, DPR = window.devicePixelRatio || 1;
+
+  var COLORS = {
+    core: '#eafcff', person: '#00e5ff', place: '#39ff8f',
+    thing: '#ffb020', topic: '#b967ff', skill: '#ff3d81'
+  };
+  var KIND_COLORS = {
+    episode: '#4fd6ff', fact: '#ffd166', reflection: '#ffb347',
+    preference: '#9dff8f', skill: '#ff7fd0', relation: '#b18cff'
+  };
+  var CLUSTERS = ['person', 'topic', 'thing', 'place', 'skill'];
+  var CLUSTER_DIRS = [
+    [0, 1, 0],                    // person：北极
+    [1, 0, 0],                    // topic：赤道 0°
+    [-0.5, 0, 0.866],             // thing：赤道 120°
+    [0, -1, 0],                   // place：南极
+    [-0.5, 0, -0.866]             // skill：赤道 240°
+  ];
+
+  var nodes = [];
+  var edges = [];
+  var mode3d = true;
+  var yaw = 0.35, pitch = -0.18, zoom = 1.55, panX = 0, panY = 0;
+  var dragging = false, lastX = 0, lastY = 0;
+  var hovered = null;
+
+  var stars = [];
+
+  function makeStars() {
+    stars = [];
+    var n = Math.min(240, Math.round((W * H) / 5200));
+    for (var i = 0; i < n; i++) {
+      stars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: Math.random() < 0.85 ? 0.7 : 1.4,
+        a: 0.15 + Math.random() * 0.45,
+        sp: 0.4 + Math.random() * 1.2,
+        ph: Math.random() * Math.PI * 2
+      });
+    }
+  }
+
+  function resize() {
+    var box = canvas.parentElement.getBoundingClientRect();
+    W = box.width; H = box.height;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    makeStars();
+  }
+
+  // 用预渲染的柔边光点，避免每帧建渐变，也天然没有硬边际
+  var SPRITES = {};
+  function spriteFor(color) {
+    if (SPRITES[color]) return SPRITES[color];
+    var s = document.createElement('canvas');
+    s.width = s.height = 64;
+    var c = s.getContext('2d');
+    var g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.16, hexA(color, 0.85));
+    g.addColorStop(0.42, hexA(color, 0.30));
+    g.addColorStop(0.72, hexA(color, 0.08));
+    g.addColorStop(1, hexA(color, 0));
+    c.fillStyle = g;
+    c.beginPath(); c.arc(32, 32, 32, 0, Math.PI * 2); c.fill();
+    SPRITES[color] = s;
+    return s;
+  }
+
+  function hexA(hex, a) {
+    var h = String(hex).replace('#', '');
+    var r = parseInt(h.substring(0, 2), 16);
+    var g = parseInt(h.substring(2, 4), 16);
+    var b = parseInt(h.substring(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+  }
+
+  // 球面均匀方向（Fibonacci）
+  function fibonacciDir(i, n) {
+    var y = 1 - (2 * (i + 0.5)) / n;
+    var r = Math.sqrt(Math.max(0, 1 - y * y));
+    var theta = i * Math.PI * (3 - Math.sqrt(5));
+    return [Math.cos(theta) * r, y, Math.sin(theta) * r];
+  }
+
+  function basisFor(d) {
+    var up = Math.abs(d[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+    var u = [up[1] * d[2] - up[2] * d[1], up[2] * d[0] - up[0] * d[2], up[0] * d[1] - up[1] * d[0]];
+    var ul = Math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]) || 1;
+    u = [u[0] / ul, u[1] / ul, u[2] / ul];
+    var v = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]];
+    return [u, v];
+  }
+
+  // 球形布点：五类各占一个球冠（方向两两 90°），簇内用等角螺旋铺匀
+  function layout() {
+    nodes.forEach(function (n) {
+      if (n.type === 'core') { n.x = 0; n.y = 0; n.z = 0; n.r = 10; n.phase = 0; }
+    });
+
+    var GOLDEN = Math.PI * (3 - Math.sqrt(5));
+
+    CLUSTERS.forEach(function (type, ci) {
+      var list = nodes.filter(function (n) { return n.type === type; });
+      if (!list.length) return;
+      list.sort(function (a, b) { return (b.degree || 0) - (a.degree || 0) || a.id - b.id; });
+      var d = CLUSTER_DIRS[ci] || fibonacciDir(ci, CLUSTERS.length);
+      var b = basisFor(d), u = b[0], v = b[1];
+      // 簇越大，球冠越大（但相邻方向 90°，最大 0.68 rad 不会撞上）
+      var cone = Math.min(0.68, 0.40 + 0.05 * Math.sqrt(list.length));
+      var cosMax = Math.cos(cone);
+      list.forEach(function (n, k) {
+        var ct = 1 - ((k + 0.5) / list.length) * (1 - cosMax);
+        var st = Math.sqrt(Math.max(0, 1 - ct * ct));
+        var phi = k * GOLDEN;
+        var px = d[0] * ct + (u[0] * Math.cos(phi) + v[0] * Math.sin(phi)) * st;
+        var py = d[1] * ct + (u[1] * Math.cos(phi) + v[1] * Math.sin(phi)) * st;
+        var pz = d[2] * ct + (u[2] * Math.cos(phi) + v[2] * Math.sin(phi)) * st;
+        var R = 205 + (Math.random() - 0.5) * 34;
+        n.x = px * R; n.y = py * R; n.z = pz * R;
+        n.r = 2.6 + Math.min(6.5, Math.sqrt(n.degree || 1) * 1.25);
+        n.phase = (k * 0.7) % (Math.PI * 2);
+      });
+    });
+
+    // 记忆层：贴在相关实体的方向上，半径更小，形成内外两层
+    var byId = {};
+    nodes.forEach(function (n) { byId[n.id] = n; });
+    var memNodes = nodes.filter(function (n) { return n.type === 'memory'; });
+    memNodes.forEach(function (n, k) {
+      var cx = 0, cy = 0, cz = 0, cnt = 0;
+      (n.entityIds || []).forEach(function (eid) {
+        var e = byId[eid];
+        if (!e) return;
+        cx += e.x; cy += e.y; cz += e.z; cnt++;
+      });
+      var R = 132;
+      if (cnt) {
+        cx /= cnt; cy /= cnt; cz /= cnt;
+        var L = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
+        n.x = (cx / L) * R; n.y = (cy / L) * R; n.z = (cz / L) * R;
+      } else {
+        var dir = fibonacciDir(k, Math.max(1, memNodes.length));
+        n.x = dir[0] * R; n.y = dir[1] * R; n.z = dir[2] * R;
+      }
+      n.r = 1.8 + (n.imp || 0.4) * 3.2;
+      if (n.kind === 'reflection') n.r = 5.6;
+      n.phase = (k * 0.9) % (Math.PI * 2);
+    });
+  }
+
+  function project(p) {
+    var cy = Math.cos(yaw), sy = Math.sin(yaw);
+    var cp = Math.cos(pitch), sp = Math.sin(pitch);
+    var x = p.x * cy - p.z * sy;
+    var z = p.x * sy + p.z * cy;
+    var y = p.y * cp - z * sp;
+    z = p.y * sp + z * cp;
+    var f = 620;
+    var s = f / (f + z + 420);
+    return {
+      x: W / 2 + panX + x * s * zoom,
+      y: H / 2 + panY + y * s * zoom,
+      s: s * zoom,
+      z: z
+    };
+  }
+
+
+  // ---------------------------------------------------------------- 大脑皮层线框
+  var CORTEX = null;
+  function buildCortex() {
+    CORTEX = [];
+    var R = 158;
+    for (var side = -1; side <= 1; side += 2) {
+      var ox = side * R * 0.50;
+      function push(a, b) { CORTEX.push([a, b]); }
+      // 纬线
+      for (var lat = -1.1; lat <= 1.11; lat += 0.30) {
+        var y = Math.sin(lat) * R * 0.74;
+        var rr = Math.cos(lat) * R * 0.36;
+        var prev = null;
+        for (var a = 0; a <= Math.PI * 2 + 0.01; a += Math.PI / 18) {
+          var pt = { x: ox + Math.cos(a) * rr, y: y, z: Math.sin(a) * rr * 1.45 };
+          if (prev) push(prev, pt);
+          prev = pt;
+        }
+      }
+      // 经线
+      for (var lon = 0; lon < Math.PI * 2; lon += Math.PI / 5) {
+        var prev2 = null;
+        for (var b = -1.15; b <= 1.15; b += 0.16) {
+          var yy = Math.sin(b) * R * 0.74;
+          var rr2 = Math.cos(b) * R * 0.36;
+          var pt2 = { x: ox + Math.cos(lon) * rr2, y: yy, z: Math.sin(lon) * rr2 * 1.45 };
+          if (prev2) push(prev2, pt2);
+          prev2 = pt2;
+        }
+      }
+    }
+  }
+
+  function drawCortex(t) {
+    if (!CORTEX) buildCortex();
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = 0.85;
+    var prevMid = null;
+    for (var m = -1.1; m <= 1.11; m += 0.08) {
+      var mp = project({ x: 0, y: Math.sin(m) * 165, z: 0 });
+      if (prevMid) {
+        ctx.strokeStyle = 'rgba(0,229,255,0.18)';
+        ctx.beginPath(); ctx.moveTo(prevMid.x, prevMid.y); ctx.lineTo(mp.x, mp.y); ctx.stroke();
+      }
+      prevMid = mp;
+    }
+    for (var i = 0; i < CORTEX.length; i++) {
+      var a = project(CORTEX[i][0]), b = project(CORTEX[i][1]);
+      if (!a || !b) continue;
+      var depth = Math.max(-1, Math.min(1, (a.z + b.z) / 260));
+      var alpha = Math.max(0.02, 0.10 * (0.95 - depth * 0.3));
+      ctx.strokeStyle = 'rgba(0,210,255,' + alpha.toFixed(3) + ')';
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 随机神经元放电
+  var fires = [];
+  function updateFires(t) {
+    if (speaking && Math.random() < 0.07) {
+      var n = nodes[(Math.random() * nodes.length) | 0];
+      if (n && n.type !== 'core') fires.push({ id: n.id, start: t, life: 0.75 + Math.random() * 0.5 });
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var i = fires.length - 1; i >= 0; i--) {
+      var f = fires[i];
+      var p = (t - f.start) / f.life;
+      if (p >= 1) { fires.splice(i, 1); continue; }
+      var node = nodes.find(function (x) { return x.id === f.id; });
+      if (!node) { fires.splice(i, 1); continue; }
+      var sp = project(node);
+      var rr = Math.max(3, node.r * sp.s) * (1 + p * 4.5);
+      var fa = (1 - p) * (f.dim ? 0.35 : 0.8);
+      ctx.strokeStyle = 'rgba(150,245,255,' + fa.toFixed(3) + ')';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, rr, 0, Math.PI * 2); ctx.stroke();
+      if (p < 0.45) {
+        var g = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, rr * 1.4);
+        g.addColorStop(0, 'rgba(220,255,255,' + ((1 - p) * (f.dim ? 0.18 : 0.45)).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(0,229,255,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, rr * 1.4, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+
+
+  // 脑形光晕：两瓣柔光，给网络一个“大脑”的轮廓
+  function drawBrainShell(t) {
+    var cx = W / 2 + panX, cy = H / 2 + panY;
+    var R = 250 * zoom;
+    var breathe = 0.5 + 0.5 * Math.sin(t * 0.8);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var side = -1; side <= 1; side += 2) {
+      for (var layer = 3; layer >= 1; layer--) {
+        var rr = R * (0.32 + layer * 0.09) * (1 + breathe * 0.015);
+        var g = ctx.createRadialGradient(
+          cx + side * R * 0.36, cy - R * 0.04, 0,
+          cx + side * R * 0.36, cy - R * 0.04, rr
+        );
+        g.addColorStop(0, 'rgba(40,130,235,' + (0.030 * layer + breathe * 0.006).toFixed(3) + ')');
+        g.addColorStop(0.55, 'rgba(90,70,220,' + (0.012 * layer).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(cx + side * R * 0.36, cy - R * 0.04, rr * 0.86, rr * 1.06, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  var SAT = null;
+  function drawOrbits(t) {
+    var rings = [
+      { rx: 455, rz: 300, tilt: 0.42, spin: 0.16, color: '0,229,255', a: 0.20, sat: true },
+      { rx: 510, rz: 345, tilt: -0.62, spin: -0.09, color: '150,120,255', a: 0.10 },
+      { rx: 565, rz: 385, tilt: 0.95, spin: 0.05, color: '255,90,190', a: 0.06 }
+    ];
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    rings.forEach(function (ring, idx) {
+      var prev = null;
+      for (var i = 0; i <= 140; i++) {
+        var a = (i / 140) * Math.PI * 2;
+        var x = Math.cos(a) * ring.rx;
+        var z = Math.sin(a) * ring.rz;
+        var y = z * Math.sin(ring.tilt);
+        z = z * Math.cos(ring.tilt);
+        var p = project({ x: x, y: y, z: z });
+        if (prev) {
+          ctx.strokeStyle = 'rgba(' + ring.color + ',' + ring.a.toFixed(3) + ')';
+          ctx.lineWidth = idx === 0 ? 1.0 : 0.7;
+          ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+        }
+        prev = p;
+      }
+    });
+
+    // 一颗重要的记忆，像卫星一样沿最外层轨道走
+    if (SAT) {
+      var ring = rings[0];
+      var ang = t * 0.32;
+      function posAt(a) {
+        var z = Math.sin(a) * ring.rz;
+        return project({
+          x: Math.cos(a) * ring.rx,
+          y: z * Math.sin(ring.tilt),
+          z: z * Math.cos(ring.tilt)
+        });
+      }
+      // 拖尾
+      for (var k = 1; k <= 5; k++) {
+        var tp = posAt(ang - k * 0.05);
+        ctx.fillStyle = 'rgba(150,245,255,' + (0.16 - k * 0.026).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(tp.x, tp.y, Math.max(1, 4 - k * 0.5), 0, Math.PI * 2); ctx.fill();
+      }
+      var sp = posAt(ang);
+      var g = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, 16);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.35, 'rgba(120,245,255,0.65)');
+      g.addColorStop(1, 'rgba(0,229,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, 16, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(230,255,255,0.95)';
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, 2.6, 0, Math.PI * 2); ctx.fill();
+
+      ctx.font = '10px ui-monospace,SFMono-Regular,Menlo,monospace';
+      ctx.fillStyle = 'rgba(160,245,255,0.62)';
+      ctx.textAlign = 'left';
+      ctx.fillText('核心 · ' + String((SAT.name || '')).slice(0, 10), sp.x + 14, sp.y - 6);
+    }
+    ctx.restore();
+  }
+
+
+  var sparkles = [], sparkleNext = 0;
+  function updateSparkles(t) {
+    if (t > sparkleNext) {
+      var n = speaking ? 6 : 4;
+      for (var i = 0; i < n; i++) {
+        var nd = nodes[(Math.random() * nodes.length) | 0];
+        if (nd) sparkles.push({ id: nd.id, start: t + Math.random() * 0.4, life: 1.4 + Math.random() * 0.8 });
+      }
+      sparkleNext = t + (speaking ? 0.5 : 2.5 + Math.random() * 2.5);
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var j = sparkles.length - 1; j >= 0; j--) {
+      var sp2 = sparkles[j];
+      var pr = (t - sp2.start) / sp2.life;
+      if (pr >= 1) { sparkles.splice(j, 1); continue; }
+      if (pr < 0) continue;
+      var nd2 = nodes.find(function (x) { return x.id === sp2.id; });
+      if (!nd2) { sparkles.splice(j, 1); continue; }
+      var pp = project(nd2);
+      var rr = (6 + pr * 22) * zoom;
+      var ga = (1 - pr) * (speaking ? 0.55 : 0.40);
+      var gg = ctx.createRadialGradient(pp.x, pp.y, 0, pp.x, pp.y, rr);
+      gg.addColorStop(0, 'rgba(210,255,255,' + ga.toFixed(3) + ')');
+      gg.addColorStop(0.45, 'rgba(80,230,255,' + (ga * 0.5).toFixed(3) + ')');
+      gg.addColorStop(1, 'rgba(0,229,255,0)');
+      ctx.fillStyle = gg;
+      ctx.beginPath(); ctx.arc(pp.x, pp.y, rr, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    if (mode3d && !dragging && !hovered) yaw += 0.0016;
+
+    var t = performance.now() / 1000;
+
+    // 星空：只闪不转
+    ctx.globalCompositeOperation = 'lighter';
+    for (var i = 0; i < stars.length; i++) {
+      var st = stars[i];
+      var tw = st.a * (0.65 + 0.35 * Math.sin(t * st.sp + st.ph));
+      ctx.fillStyle = 'rgba(200,220,255,' + tw.toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    var pts = {};
+    nodes.forEach(function (n) { pts[n.id] = project(n); });
+
+    // 中央星云，给一点体积感
+    var cx = W / 2 + panX, cy0 = H / 2 + panY, rad = 255 * zoom;
+    var bg = ctx.createRadialGradient(cx, cy0, 0, cx, cy0, rad);
+    bg.addColorStop(0, 'rgba(80,120,220,0.10)');
+    bg.addColorStop(0.55, 'rgba(90,70,190,0.05)');
+    bg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = bg;
+    ctx.beginPath(); ctx.arc(cx, cy0, rad, 0, Math.PI * 2); ctx.fill();
+
+    // 核心外面的 HUD 环
+    var ringR = 120 * zoom;
+    ctx.save();
+    ctx.translate(cx, cy0);
+    ctx.rotate(t * 0.12);
+    ctx.strokeStyle = 'rgba(0,229,255,0.10)';
+    ctx.lineWidth = 0.8;
+    ctx.setLineDash([3, 9]);
+    ctx.beginPath(); ctx.arc(0, 0, ringR, 0, Math.PI * 2); ctx.stroke();
+    ctx.rotate(-t * 0.26);
+    ctx.strokeStyle = 'rgba(0,229,255,0.06)';
+    ctx.setLineDash([1, 14]);
+    ctx.beginPath(); ctx.arc(0, 0, ringR * 1.35, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    // 外圈刻度
+    ctx.rotate(t * 0.05);
+    for (var tick = 0; tick < 72; tick++) {
+      var ang = (tick / 72) * Math.PI * 2;
+      var r1 = ringR * 1.62, r2 = r1 + (tick % 6 === 0 ? 8 : 3);
+      ctx.strokeStyle = tick % 6 === 0 ? 'rgba(0,229,255,0.45)' : 'rgba(0,229,255,0.16)';
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ang) * r1, Math.sin(ang) * r1);
+      ctx.lineTo(Math.cos(ang) * r2, Math.sin(ang) * r2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    drawBrainShell(t);
+    if (!speaking && t > idleFireNext) {
+      var rn = nodes[(Math.random() * nodes.length) | 0];
+      if (rn) fires.push({ id: rn.id, start: t, life: 1.1, dim: true });
+      idleFireNext = t + 6 + Math.random() * 5;
+    }
+    updateFires(t);
+    if (!speaking && t > idleNext) {
+      for (var ip = 0; ip < 6; ip++) pulseList.push(makePulse(t + ip * 0.5, true));
+      if (pulseList.length > 110) pulseList.splice(0, pulseList.length - 110);
+      idleNext = t + 2.5 + Math.random() * 3.5;
+    }
+
+    // 线：白色，细，靠深度调透明度
+    edges.forEach(function (e) {
+      var a = pts[e.src], b = pts[e.dst];
+      if (!a || !b) return;
+      var depth = Math.max(-1, Math.min(1, (a.z + b.z) / 300));
+      var base = e.kind === 'relation' ? 0.22 : (e.kind === 'memory' ? 0.09 : 0.05);
+      var alpha = Math.max(0.015, base * (0.7 - depth * 0.25));
+      if (e.kind === 'relation' || e.kind === 'memory') {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(120,220,255,' + (alpha * 0.35).toFixed(3) + ')';
+        ctx.lineWidth = e.kind === 'relation' ? 2.4 : 1.6;
+        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,255,255,' + alpha.toFixed(3) + ')';
+      ctx.lineWidth = e.kind === 'relation' ? 0.7 : (e.kind === 'memory' ? 0.35 : 0.4);
+      if (e.kind === 'cooccur') ctx.setLineDash([2, 3]);
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      if (e.kind === 'cooccur') ctx.setLineDash([]);
+    });
+
+    // 脑电波：从大脑出发，一路走到尽头，然后淡出消失
+    ctx.globalCompositeOperation = 'lighter';
+    for (var k = 0; k < pulseList.length; k++) {
+      var pu = pulseList[k];
+      if (!speaking && !pu.dim) continue;
+      var dimk = pu.dim ? 1.0 : 1;
+      if (!pu.path || pu.path.length < 2) continue;
+      var p = (t - pu.start) / pu.duration;
+      if (p >= 1) {
+        if (pu.dim) { pulseList.splice(k, 1); k--; }
+        else { pulseList[k] = makePulse(t + 0.6 + Math.random() * 3.0); }
+        continue;
+      }
+      if (p < 0) continue;
+
+      var fade = Math.min(1, p / 0.05) * Math.min(1, (1 - p) / 0.16);
+      if (fade <= 0) continue;
+      fade *= dimk;
+
+      var segs = pu.path.length - 1;
+      var idx = Math.min(segs - 1, Math.floor(p * segs));
+      var lp = p * segs - idx;
+      var A = pts[pu.path[idx]];
+      var B = pts[pu.path[idx + 1]];
+      if (!A || !B) continue;
+      var px2 = A.x + (B.x - A.x) * lp;
+      var py2 = A.y + (B.y - A.y) * lp;
+
+      // 短拖尾
+      var tlp = Math.max(0, lp - 0.06);
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(160,245,255,' + (0.22 * fade).toFixed(3) + ')';
+      ctx.lineWidth = Math.max(0.8, pu.size * 0.5);
+      ctx.moveTo(A.x + (B.x - A.x) * tlp, A.y + (B.y - A.y) * tlp);
+      ctx.lineTo(px2, py2);
+      ctx.stroke();
+
+      for (var trail = 0; trail < 2; trail++) {
+        var cell = Math.max(0, lp - trail * 0.03);
+        var tx2 = A.x + (B.x - A.x) * cell;
+        var ty2 = A.y + (B.y - A.y) * cell;
+        var pr = pu.size * (1 - trail * 0.3);
+        var alpha2 = (0.95 - trail * 0.35) * fade;
+        var pg = ctx.createRadialGradient(tx2, ty2, 0, tx2, ty2, Math.max(1, pr));
+        pg.addColorStop(0, 'rgba(245,255,255,' + alpha2.toFixed(2) + ')');
+        pg.addColorStop(0.4, 'rgba(120,245,255,' + (alpha2 * 0.7).toFixed(2) + ')');
+        pg.addColorStop(1, 'rgba(0,229,255,0)');
+        ctx.fillStyle = pg;
+        ctx.beginPath(); ctx.arc(tx2, ty2, Math.max(1, pr), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // 节点：预渲染柔边光点 + 加色混合，没有硬边
+    ctx.globalCompositeOperation = 'lighter';
+    var order = nodes.slice().sort(function (a, b) { return pts[a.id].z - pts[b.id].z; });
+    order.forEach(function (n) {
+      var p = pts[n.id];
+      var c = n.type === 'memory'
+        ? (KIND_COLORS[n.kind] || '#9be9ff')
+        : (COLORS[n.type] || '#9aa3b8');
+      var pulse = 1 + 0.10 * Math.sin(t * 1.5 + (n.phase || 0));
+      var r = Math.max(1.8, n.r * p.s * pulse);
+      var size = r * (n.type === 'core' ? 5.2 : 3.4);
+      var alpha = 0.42 + 0.45 * Math.max(0, Math.min(1, p.s));
+      if (n === hovered) alpha = 1;
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(spriteFor(c), p.x - size / 2, p.y - size / 2, size, size);
+      ctx.globalAlpha = 1;
+    });
+    ctx.globalCompositeOperation = 'source-over';
+    updateSparkles(t);
+
+    if (hovered) {
+      var hp = pts[hovered.id];
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 0.9;
+      ctx.arc(hp.x, hp.y, Math.max(6, hovered.r * hp.s * 1.6), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // 文字：只有鼠标悬停才显示
+    if (hovered) {
+      var hp2 = pts[hovered.id];
+      var label = hovered.name;
+      var fs = 11;
+      ctx.font = '600 ' + fs + 'px ui-monospace,SFMono-Regular,Menlo,monospace';
+      ctx.textAlign = 'center';
+      var tw = ctx.measureText(label).width;
+      var bx = hp2.x, by = hp2.y - Math.max(7, hovered.r * hp2.s) - 16;
+      ctx.fillStyle = 'rgba(4,10,16,0.82)';
+      ctx.beginPath();
+      ctx.rect(bx - tw / 2 - 8, by - fs - 2, tw + 16, fs + 10);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,229,255,0.55)';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      ctx.shadowColor = 'rgba(0,229,255,0.9)';
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = 'rgba(220,252,255,0.98)';
+      ctx.fillText(label, bx, by - 3);
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  function frame() { draw(); requestAnimationFrame(frame); }
+
+  function pick(mx, my) {
+    var best = null, bestD = 14 * 14;
+    nodes.forEach(function (n) {
+      var p = project(n);
+      var d = (p.x - mx) * (p.x - mx) + (p.y - my) * (p.y - my);
+      if (d < bestD) { bestD = d; best = n; }
+    });
+    return best;
+  }
+
+  function localPos(ev) {
+    var rect = canvas.getBoundingClientRect();
+    return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+  }
+
+  canvas.addEventListener('mousedown', function (ev) {
+    var p = localPos(ev);
+    dragging = true; lastX = p.x; lastY = p.y;
+    canvas.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', function (ev) {
+    var p = localPos(ev);
+    hovered = pick(p.x, p.y);
+    if (!dragging) return;
+    var dx = p.x - lastX, dy = p.y - lastY;
+    lastX = p.x; lastY = p.y;
+    if (mode3d) {
+      yaw += dx * 0.008;
+      pitch = Math.max(-1.2, Math.min(1.2, pitch + dy * 0.006));
+    } else {
+      panX += dx; panY += dy;
+    }
+  });
+  window.addEventListener('mouseup', function () {
+    dragging = false;
+    canvas.classList.remove('dragging');
+  });
+  canvas.addEventListener('wheel', function (ev) {
+    ev.preventDefault();
+    zoom = Math.max(0.45, Math.min(3.2, zoom * (ev.deltaY < 0 ? 1.1 : 0.9)));
+  }, { passive: false });
+  canvas.addEventListener('click', function (ev) {
+    var p = localPos(ev);
+    var n = pick(p.x, p.y);
+    if (!n || n.type === 'core') return;
+    if (n.type === 'memory') {
+      document.getElementById('profile').hidden = true;
+      renderMemories([{ id: n.memId, text: n.fullText, kind: n.kind, date: n.date, importance: n.imp }], '这条记忆');
+    } else {
+      loadEntity(n);
+    }
+  });
+
+  // ---------------------------------------------------------------- 数据
+
+  function buildGraph(g) {
+    nodes = [];
+    edges = [];
+    var coreId = -1;
+    nodes.push({ id: coreId, name: '大脑', type: 'core', degree: 0, x: 0, y: 0, z: 0, r: 9 });
+    (g.nodes || []).forEach(function (n) {
+      nodes.push({ id: n.id, name: n.name, type: n.type || 'thing', degree: n.degree || 0, x: 0, y: 0, z: 0, r: 3 });
+      edges.push({ src: coreId, dst: n.id, kind: 'core', label: '' });
+    });
+    (g.memories || []).forEach(function (m) {
+      var nid = 'm' + m.id;
+      var d = new Date((m.created_at || 0) * 1000);
+      var stamp = (d.getMonth() + 1) + '/' + d.getDate();
+      nodes.push({
+        id: nid, name: (m.text || '').slice(0, 24), type: 'memory', kind: m.kind,
+        degree: (m.entities || []).length, imp: m.importance || 0.4,
+        fullText: m.text || '', date: stamp, memId: m.id,
+        entityIds: m.entities || [], x: 0, y: 0, z: 0, r: 3
+      });
+      edges.push({ src: coreId, dst: nid, kind: 'core', label: '' });
+      (m.entities || []).forEach(function (eid) {
+        edges.push({ src: nid, dst: eid, kind: 'memory', label: '' });
+      });
+    });
+    (g.edges || []).forEach(function (e) {
+      edges.push({ src: e.src, dst: e.dst, kind: e.kind === 'relation' ? 'relation' : 'cooccur', label: e.label || '' });
+    });
+    var important = nodes.filter(function (n) { return n.type === 'memory'; })
+      .sort(function (a, b) { return (b.imp || 0) - (a.imp || 0); });
+    SAT = important[0] || null;
+    layout();
+    buildPulses();
+  }
+
+  var pulseList = [];
+  var coreSpokes = [];
+  var relAdj = {};
+
+  function buildPulseGraph() {
+    coreSpokes = [];
+    relAdj = {};
+    edges.forEach(function (e) {
+      if (e.kind === 'core') {
+        coreSpokes.push(e);
+      } else if (e.kind === 'relation') {
+        (relAdj[e.src] = relAdj[e.src] || []).push(e);
+        (relAdj[e.dst] = relAdj[e.dst] || []).push(e);
+      }
+    });
+  }
+
+  // 大脑 → 节点 → 1~3 跳邻居，走完就消失
+  function newPath() {
+    if (!coreSpokes.length) return [];
+    var ce = coreSpokes[Math.floor(Math.random() * coreSpokes.length)];
+    var path = [ce.src, ce.dst];
+    var last = ce.dst;
+    var hops = 1 + Math.floor(Math.random() * 3);
+    for (var h = 0; h < hops; h++) {
+      var prev = path[path.length - 2];
+      var cands = (relAdj[last] || []).filter(function (e) {
+        var other = (e.src === last) ? e.dst : e.src;
+        return other !== prev;
+      });
+      if (!cands.length) break;
+      var re = cands[Math.floor(Math.random() * cands.length)];
+      var next = (re.src === last) ? re.dst : re.src;
+      path.push(next);
+      last = next;
+    }
+    return path;
+  }
+
+  function makePulse(startAt, dim) {
+    var path = newPath();
+    var segs = Math.max(1, path.length - 1);
+    return {
+      path: path,
+      start: startAt,
+      duration: segs * (5.0 + Math.random() * 4.0),
+      size: dim ? (5.0 + Math.random() * 2.5) : (2.2 + Math.random() * 1.4),
+      dim: !!dim
+    };
+  }
+
+  function buildPulses() {
+    buildPulseGraph();
+    pulseList = [];
+    var count = Math.min(26, Math.max(10, Math.round(coreSpokes.length * 0.32)));
+    var now = performance.now() / 1000;
+    for (var i = 0; i < count; i++) {
+      pulseList.push(makePulse(now + Math.random() * 6));
+    }
+  }
+
+  function renderStats(d) {
+    var kinds = Object.keys(d.kinds || {}).map(function (k) { return k + ' ' + d.kinds[k]; }).join(' · ') || '空';
+    document.getElementById('stats').innerHTML =
+      '记忆 <b>' + d.active + '</b>（归档 ' + d.archived + '） · 实体 <b>' + d.entities +
+      '</b> · 关系 <b>' + d.relations + '</b> · 向量 ' + (d.embedding ? '开' : '关') +
+      ' <span style="opacity:.6">' + kinds + '</span>';
+  }
+
+  function renderMemories(items, title) {
+    document.getElementById('side-title').textContent = title || '最近记忆';
+    var box = document.getElementById('memories');
+    if (!items.length) { box.innerHTML = '<div class="empty">暂无</div>'; return; }
+    box.innerHTML = '';
+    items.forEach(function (m) {
+      var div = document.createElement('div');
+      div.className = 'mem';
+      div.innerHTML = '<div class="t"></div><div class="m">' +
+        '<span class="tag">' + (m.kind || '') + '</span>' +
+        '<span>' + (m.date || '') + '</span>' +
+        '<span>重要性 ' + (m.importance || '') + '</span>' +
+        '<button class="del">删除</button></div>';
+      div.querySelector('.t').textContent = m.text;
+      var delBtn = div.querySelector('.del');
+      delBtn.onclick = async function () {
+        if (delBtn.dataset.armed !== '1') {
+          delBtn.dataset.armed = '1'; delBtn.textContent = '再点一次';
+          setTimeout(function () { delBtn.dataset.armed = ''; delBtn.textContent = '删除'; }, 3000);
+          return;
+        }
+        delBtn.dataset.armed = '';
+        try { await call('page/memory/delete', { id: m.id }); toast('已删除'); reload(); }
+        catch (e) { toast(e.message); }
+      };
+      box.appendChild(div);
+    });
+  }
+
+  function renderChanges(d) {
+    var box = document.getElementById('side-title');
+    box.textContent = '记忆变化（24 小时）';
+    var list = document.getElementById('memories');
+    list.innerHTML = '';
+    var groups = [
+      ['新增', d.added, '最近写入的'],
+      ['变淡', d.fading, '重要性掉到 0.4 以下，再低就会归档'],
+      ['已归档', d.archived, '不再参与检索，180 天后删除'],
+    ];
+    groups.forEach(function (g) {
+      var h = document.createElement('div');
+      h.className = 'h';
+      h.textContent = g[0] + ' ' + (g[1] && g[1].count != null ? g[1].count : 0) + ' 条 · ' + g[2];
+      h.style.marginTop = '10px';
+      list.appendChild(h);
+      var items = (g[1] && g[1].items) || [];
+      if (!items.length) {
+        var e = document.createElement('div');
+        e.className = 'empty'; e.textContent = '暂无';
+        list.appendChild(e);
+        return;
+      }
+      items.forEach(function (m) {
+        var div = document.createElement('div');
+        div.className = 'mem';
+        var t = document.createElement('div'); t.className = 't'; t.textContent = m.text;
+        var meta = document.createElement('div'); meta.className = 'm';
+        meta.textContent = m.kind + ' · ' + m.date + ' · 重要性 ' + m.importance;
+        div.appendChild(t); div.appendChild(meta);
+        list.appendChild(div);
+      });
+    });
+  }
+
+  function renderEval(d, drafts) {
+    document.getElementById('side-title').textContent = '检索评估';
+    var box = document.getElementById('memories');
+    box.innerHTML = '';
+
+    drafts = drafts || [];
+    if (drafts.length) {
+      var dh = document.createElement('div');
+      dh.className = 'h';
+      dh.textContent = '待你标：' + drafts.length + ' 条（勾选对的，不用看 id）';
+      box.appendChild(dh);
+      drafts.forEach(function (item) {
+        var card = document.createElement('div');
+        card.className = 'mem';
+        var q = document.createElement('div'); q.className = 't'; q.textContent = item.query;
+        card.appendChild(q);
+        (item.candidates || []).forEach(function (c) {
+          var lab = document.createElement('label');
+          lab.style.cssText = 'display:flex;gap:6px;font-size:11.5px;padding:2px 0;color:#cfe3ef';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.value = c.id;
+          var span = document.createElement('span');
+          span.textContent = c.text;
+          lab.appendChild(cb); lab.appendChild(span);
+          card.appendChild(lab);
+        });
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:6px;margin-top:6px';
+        var save = document.createElement('button');
+        save.textContent = '保存选中';
+        save.onclick = async function () {
+          var ids = Array.prototype.slice.call(card.querySelectorAll('input:checked')).map(function (x) { return Number(x.value); });
+          if (!ids.length) { toast('先勾一条对的，或者点「都不对」'); return; }
+          try { await call('page/eval/draft/save', { query: item.query, ids: ids }); toast('已加入评估'); showEval(); }
+          catch (e) { toast(e.message); }
+        };
+        var none = document.createElement('button');
+        none.textContent = '都不对';
+        none.onclick = async function () {
+          try { await call('page/eval/draft/save', { query: item.query, ids: [], negative: true }); toast('记为无答案'); showEval(); }
+          catch (e) { toast(e.message); }
+        };
+        var skip = document.createElement('button');
+        skip.textContent = '跳过';
+        skip.onclick = async function () {
+          try { await call('page/eval/draft/skip', { query: item.query }); showEval(); }
+          catch (e) { toast(e.message); }
+        };
+        row.appendChild(save); row.appendChild(none); row.appendChild(skip);
+        card.appendChild(row);
+        box.appendChild(card);
+      });
+    }
+
+    if (!d || d.empty) {
+      var e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = '还没跑过。点下面的按钮跑一次。';
+      box.appendChild(e);
+    } else {
+      var h = document.createElement('div');
+      h.className = 'mem';
+      h.innerHTML = '<div class="t">' + d.n + ' 条 · recall@1 ' + Math.round(d.recall1 * 100) +
+        '% · @3 ' + Math.round(d.recall3 * 100) + '% · @5 ' + Math.round(d.recall5 * 100) +
+        '% · MRR ' + d.mrr + ' · p50 ' + d.p50_ms + 'ms</div>' +
+        '<div class="m">' + d.time + '</div>';
+      box.appendChild(h);
+
+      var types = Object.keys(d.per_type || {});
+      types.forEach(function (k) {
+        var v = d.per_type[k];
+        var row = document.createElement('div');
+        row.className = 'mem';
+        row.innerHTML = '<div class="m">' + k + ' · ' + v.n + ' 条 · @3 ' +
+          Math.round(v.recall3 * 100) + '%</div>';
+        box.appendChild(row);
+      });
+
+      (d.misses || []).forEach(function (m) {
+        var div = document.createElement('div');
+        div.className = 'mem';
+        var t = document.createElement('div'); t.className = 't'; t.textContent = '✗ ' + m.query;
+        var meta = document.createElement('div'); meta.className = 'm';
+        meta.textContent = '期望 ' + m.expect.join('/') + ' · 实得 ' +
+          (m.got || []).map(function (g) { return g.id; }).join('/');
+        div.appendChild(t); div.appendChild(meta);
+        box.appendChild(div);
+      });
+    }
+    var sample = document.createElement('button');
+    sample.textContent = '抽 10 条待标';
+    sample.style.marginTop = '10px';
+    sample.style.marginRight = '6px';
+    sample.onclick = async function () {
+      sample.disabled = true; sample.textContent = '抽样中…';
+      try { await call('page/eval/sample', { n: 10 }); toast('已生成草稿'); showEval(); }
+      catch (e) { toast(e.message); sample.disabled = false; sample.textContent = '抽 10 条待标'; }
+    };
+    box.appendChild(sample);
+
+    var run = document.createElement('button');
+    run.textContent = '跑一次评估';
+    run.style.marginTop = '10px';
+    run.onclick = async function () {
+      run.disabled = true; run.textContent = '评估中…';
+      try { var r = await call('page/eval/run', {}); renderEval(r); toast('完成'); }
+      catch (e) { toast(e.message); run.disabled = false; run.textContent = '跑一次评估'; }
+    };
+    box.appendChild(run);
+  }
+
+  async function showEval() {
+    try {
+      var r = await Promise.all([call('page/eval'), call('page/eval/drafts')]);
+      renderEval(r[0], (r[1] || {}).drafts || []);
+    } catch (e) { toast(e.message); }
+  }
+
+  async function showChanges() {
+    try {
+      var d = await call('page/changes');
+      renderChanges(d);
+    } catch (e) { toast(e.message); }
+  }
+
+  function renderProfile(n, text) {
+    var box = document.getElementById('profile');
+    box.hidden = false;
+    box.innerHTML = '';
+    var h = document.createElement('div');
+    h.className = 'h';
+    h.textContent = '对「' + n.name + '」的印象';
+    box.appendChild(h);
+    var body = document.createElement('div');
+    body.textContent = text || '还没有画像。';
+    box.appendChild(body);
+    var btn = document.createElement('button');
+    btn.textContent = text ? '重新生成' : '生成画像';
+    btn.style.marginTop = '5px';
+    btn.onclick = async function () {
+      btn.disabled = true; btn.textContent = '生成中…';
+      try {
+        var r = await call('page/profile', { id: n.id });
+        renderProfile(n, r.profile || '');
+        toast(r.ok ? '画像已更新' : '没有生成出来');
+      } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = '生成画像'; }
+    };
+    box.appendChild(btn);
+  }
+
+  async function loadEntity(n) {
+    try {
+      var d = await call('page/entity?id=' + n.id);
+      var items = (d.memories || []).map(function (m) {
+        return { id: m.id, text: m.text, kind: n.type, date: m.date, importance: '' };
+      });
+      renderMemories(items, '「' + n.name + '」相关记忆');
+      renderProfile(n, d.profile || '');
+    } catch (e) { toast(e.message); }
+  }
+
+  async function reload() {
+    try {
+      var g = await call('page/graph');
+      buildGraph(g);
+      renderStats(await call('page/overview'));
+      document.getElementById('profile').hidden = true;
+      var mem = await call('page/memories?limit=20');
+      renderMemories(mem.items, '最近记忆');
+    } catch (e) {
+      document.getElementById('stats').textContent = '加载失败：' + e.message;
+    }
+  }
+
+  // ---------------------------------------------------------------- 交互
+
+  document.getElementById('mode').onclick = function () {
+    mode3d = !mode3d;
+    this.textContent = mode3d ? '3D' : '2D';
+    this.classList.toggle('on', mode3d);
+    document.getElementById('hint').textContent = mode3d
+      ? '拖拽旋转 · 滚轮缩放 · 点节点看记忆 · v9（发呆有光点）'
+      : '拖拽平移 · 滚轮缩放 · 点节点看记忆';
+    if (mode3d) { yaw = 0.5; pitch = -0.25; panX = 0; panY = 0; }
+    else { yaw = 0; pitch = 0; panX = 0; panY = 0; }
+  };
+  document.getElementById('reload').onclick = reload;
+  document.getElementById('reflect').onclick = async function () {
+    try { var d = await call('page/reflection', {}); toast(d.ok ? '写好了' : '今天够了或已写过'); reload(); }
+    catch (e) { toast(e.message); }
+  };
+  document.getElementById('abstract').onclick = async function () {
+    try { var d = await call('page/abstract', {}); toast(d.count ? '沉淀了 ' + d.count + ' 条事实' : '今天没有可沉淀的'); reload(); }
+    catch (e) { toast(e.message); }
+  };
+  document.getElementById('changes').onclick = showChanges;
+  document.getElementById('eval').onclick = showEval;
+  document.getElementById('health').onclick = async function () {
+    try {
+      var d = await call('page/health');
+      var box = document.getElementById('memories');
+      box.textContent = '';
+      var pre = document.createElement('pre');
+      pre.style.cssText = 'white-space:pre-wrap;font-size:12px;line-height:1.6;margin:0';
+      pre.textContent = d.text;
+      box.appendChild(pre);
+    } catch (e) { toast(e.message); }
+  };
+
+  async function resolveConflict(id, keep) {
+    try {
+      var d = await call('page/conflicts/resolve', { id: id, keep: keep });
+      toast('保留 #' + d.kept + '，删掉 #' + d.dropped);
+      document.getElementById('conflicts').click();
+    } catch (e) { toast(e.message); }
+  }
+
+  document.getElementById('conflicts').onclick = async function () {
+    try {
+      var d = await call('page/conflicts');
+      var box = document.getElementById('memories');
+      box.textContent = '';
+      if (!d.items.length) {
+        var empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = '没有冲突';
+        box.appendChild(empty);
+        return;
+      }
+      d.items.forEach(function (g) {
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--line);font-size:12px';
+        var a = document.createElement('div');
+        a.textContent = 'A：' + g.a.text;
+        var b = document.createElement('div');
+        b.textContent = 'B：' + g.b.text;
+        b.style.marginTop = '4px';
+        var btns = document.createElement('div');
+        btns.style.marginTop = '6px';
+        var ka = document.createElement('button');
+        ka.textContent = '保留 A';
+        ka.onclick = function () { resolveConflict(g.id, 'a'); };
+        var kb = document.createElement('button');
+        kb.textContent = '保留 B';
+        kb.onclick = function () { resolveConflict(g.id, 'b'); };
+        btns.appendChild(ka); btns.appendChild(kb);
+        row.appendChild(a); row.appendChild(b); row.appendChild(btns);
+        box.appendChild(row);
+      });
+    } catch (e) { toast(e.message); }
+  };
+
+  document.getElementById('forget').onclick = async function () {
+    var q = prompt('要忘掉什么？（输入关键词）');
+    if (!q) return;
+    try {
+      var d = await call('page/forget', { text: q });
+      toast(d.deleted ? ('忘了 ' + d.deleted + ' 条') : '没找到');
+      reload();
+    } catch (e) { toast(e.message); }
+  };
+
+  document.getElementById('sleep').onclick = async function () {
+    try { var d = await call('page/sleep', {}); toast('实体并 ' + d.entities_merged + ' · 记忆并 ' + d.memories_merged); reload(); }
+    catch (e) { toast(e.message); }
+  };
+  document.getElementById('maintain').onclick = async function () {
+    try { var d = await call('page/maintain', {}); toast('衰减 ' + d.decayed + ' · 归档 ' + d.archived); reload(); }
+    catch (e) { toast(e.message); }
+  };
+  document.getElementById('search').onclick = async function () {
+    var q = document.getElementById('q').value.trim();
+    if (!q) return;
+    var box = document.getElementById('results');
+    try {
+      var d = await call('page/search', { query: q });
+      if (!d.hits.length) { box.innerHTML = '<div class="empty">没想起来相关的</div>'; return; }
+      box.innerHTML = '';
+      d.hits.forEach(function (h) {
+        var div = document.createElement('div');
+        div.className = 'mem';
+        div.innerHTML = '<div class="t"></div><div class="m"></div>';
+        div.querySelector('.t').textContent = h.text;
+        var why = h.why || {};
+        div.querySelector('.m').textContent =
+          '得分 ' + h.score + ' · 语义 ' + (why.semantic || 0) + ' · 关键词 ' + (why.keyword || 0) +
+          ' · 图谱 ' + (why.graph || 0);
+        box.appendChild(div);
+      });
+    } catch (e) { box.innerHTML = '<div class="empty">' + e.message + '</div>'; }
+  };
+
+  async function boot() {
+    resize();
+    window.addEventListener('resize', resize);
+    requestAnimationFrame(frame);
+    document.getElementById('mode').textContent = mode3d ? '3D' : '2D';
+    document.getElementById('mode').classList.toggle('on', mode3d);
+    document.getElementById('hint').textContent = mode3d
+      ? '拖拽旋转 · 滚轮缩放 · 点节点看记忆 · v9（发呆有光点）'
+      : '拖拽平移 · 滚轮缩放 · 点节点看记忆';
+    view = await waitBridge();
+    if (!view) {
+      document.getElementById('stats').textContent = '页面桥没有加载：刷新一下面板，或从「插件 → 记忆大脑」重新进入。';
+      return;
+    }
+    try { if (typeof view.ready === 'function') await view.ready(); } catch (e) {}
+    pollActivity();
+    await reload();
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

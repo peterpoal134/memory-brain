@@ -1,0 +1,8 @@
+name: astrbot_plugin_human_style_guard
+display_name: 真人感护栏
+desc: 最后一层压住客服腔、助手腔和主动提供帮助的习惯
+version: v1.0.0
+author: community
+support_platforms:
+  - aiocqhttp
+  - webchat

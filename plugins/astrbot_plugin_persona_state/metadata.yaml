@@ -1,0 +1,10 @@
+name: astrbot_plugin_persona_state
+display_name: 角色状态与情绪
+desc: 情绪值（心情/精力/黏人）、按人记的好感度、情绪记忆（旧账）和核心记忆（识海），自带管理页面，不依赖其它记忆插件
+short_desc: 情绪、好感、旧账、识海，一个插件全包
+version: v1.0.0
+author: persona-state
+support_platforms:
+  - aiocqhttp
+pages:
+  - panel
