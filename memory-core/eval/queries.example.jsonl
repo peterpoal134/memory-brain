@@ -1,0 +1,4 @@
+{"query":"用户喜欢什么玩具","expect_any":["玩具","鲸鱼"],"type":"fact"}
+{"query":"用户最近在读什么","expect_any":["读","书"],"type":"fact"}
+{"query":"用户今天在忙什么","expect_any":["今天","忙"],"type":"episode"}
+{"query":"一个完全没提过的话题","expect_any":[],"type":"negative"}

@@ -171,6 +171,32 @@ python -m memory_core.server
 - 这是从 AstrBot 插件版抽出的核心，不包含人格、情绪、表达层
 - 人格/情绪仍在原插件里；这里只负责记忆
 
+## 评估
+
+数据集是 JSONL，一行一条：
+
+```json
+{"query":"用户喜欢什么玩具","expect_any":["玩具","鲸鱼"],"type":"fact"}
+{"query":"完全没提过的话题","expect_any":[],"type":"negative"}
+```
+
+`expect_any` 为空表示负例：没有命中或最高分很低才算对。
+
+```bash
+MEMORY_EVAL=./eval/queries.example.jsonl python -m memory_core.server
+```
+
+接口：
+
+```
+GET  /eval           最近一次结果
+POST /eval/run       跑一次
+GET  /eval/queries   当前评估集
+POST /eval/query     追加一条
+```
+
+面板右上角「评估」可以直接看指标、跑一次、加查询。
+
 ## 生活层（可选）
 
 不绑定平台，只产出“她做了什么”的事件，由你的桥决定发不发。

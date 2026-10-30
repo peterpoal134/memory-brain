@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from .agent import AgentService
+from .eval import EvalService
 from .life import LifeService
 from .engine import MemoryEngine
 from .store import Store
@@ -319,6 +320,7 @@ class MemoryService:
 SERVICE: MemoryService | None = None
 AGENT: AgentService | None = None
 LIFE: LifeService | None = None
+EVAL: EvalService | None = None
 
 
 def service() -> MemoryService:
@@ -333,6 +335,13 @@ def agent() -> AgentService:
     if AGENT is None:
         AGENT = AgentService(service(), os.environ.get("AGENT_CONFIG"))
     return AGENT
+
+
+def eval_service() -> EvalService:
+    global EVAL
+    if EVAL is None:
+        EVAL = EvalService(service(), os.environ.get("MEMORY_EVAL"))
+    return EVAL
 
 
 def life() -> LifeService:
@@ -419,6 +428,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"status": "ok", "data": service().graph()})
             except Exception as exc:
                 self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path == "/eval":
+            try:
+                self._send(200, {"status": "ok", "data": eval_service().latest()})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path == "/eval/queries":
+            try:
+                self._send(200, {"status": "ok", "data": {"queries": eval_service().queries()}})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
         elif self.path == "/life/state":
             try:
                 self._send(200, {"status": "ok", "data": life().state()})
@@ -483,7 +502,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
-            if self.path == "/life/step":
+            if self.path == "/eval/run":
+                self._send(200, {"status": "ok", "data": eval_service().run()})
+            elif self.path == "/eval/query":
+                self._send(200, {"status": "ok", "data": eval_service().add_query(data)})
+            elif self.path == "/life/step":
                 with service().lock:
                     out = life().step(data.get("force") or None)
                 self._send(200, {"status": "ok", "data": out})

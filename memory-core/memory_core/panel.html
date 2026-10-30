@@ -23,14 +23,55 @@
   #auth h2{font-size:14px;margin:0 0 8px}
   #auth input{width:100%;padding:8px;border-radius:6px;border:1px solid #28485e;background:#071019;color:var(--fg)}
   #auth button{margin-top:8px;width:100%;padding:8px;border-radius:6px;border:1px solid rgba(0,229,255,.5);background:rgba(0,229,255,.14);color:#bff8ff;cursor:pointer}
+
+  #evalBtn{position:fixed;right:14px;top:12px;z-index:9;padding:6px 12px;border-radius:7px;border:1px solid rgba(0,229,255,.45);
+    background:rgba(0,229,255,.10);color:#bff8ff;font-size:12px;cursor:pointer;pointer-events:auto}
+  #evalView{position:fixed;inset:0;z-index:30;background:rgba(3,8,14,.9);display:flex;justify-content:center;align-items:flex-start;padding:40px 20px;overflow:auto}
+  #evalView[hidden]{display:none}
+  .eval-box{width:760px;max-width:100%;border:1px solid rgba(0,229,255,.22);border-radius:12px;background:#08131e;padding:18px}
+  .eval-box h2{font-size:16px;margin:0 0 12px}
+  .metrics{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  .metric{flex:1;min-width:100px;border:1px solid rgba(0,229,255,.16);border-radius:8px;padding:10px;background:rgba(0,229,255,.04)}
+  .metric b{display:block;font-size:20px;color:#bff8ff}
+  .metric span{font-size:10px;color:#7f9aab}
+  .eval-actions{display:flex;gap:8px;margin-bottom:12px}
+  .eval-actions button{padding:6px 14px;border-radius:6px;border:1px solid rgba(0,229,255,.45);background:rgba(0,229,255,.12);color:#bff8ff;cursor:pointer}
+  .eval-row{padding:7px 0;border-bottom:1px solid rgba(0,229,255,.08);font-size:12px;display:flex;gap:10px;align-items:center}
+  .eval-row .q{flex:1;color:#dffcff}
+  .eval-row .rank{width:64px;text-align:right;color:#7f9aab;font-family:ui-monospace,Menlo,monospace}
+  .eval-row.hit .rank{color:#9dff8f}
+  .eval-row.miss .rank{color:#ff7f9a}
+  #evalList{max-height:300px;overflow:auto;margin-bottom:10px}
+  .eval-add{display:flex;gap:6px;margin-top:8px}
+  .eval-add input{flex:1;padding:6px;border-radius:5px;border:1px solid #28485e;background:#071019;color:#e8f6ff;font-size:11px}
+  .eval-add button{padding:6px 12px;border-radius:5px;border:1px solid rgba(0,229,255,.4);background:rgba(0,229,255,.1);color:#bff8ff;cursor:pointer}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <header><h1>记忆大脑</h1><div id="stats">加载中…</div></header>
+<button id="evalBtn">评估</button>
 <div id="legend"></div>
 <div id="hint">拖拽旋转 · 滚轮缩放 · 悬停看节点 · memory-core</div>
 <div id="tip"></div>
+
+<div id="evalView" hidden>
+  <div class="eval-box">
+    <h2>检索评估</h2>
+    <div class="metrics" id="evalMetrics"></div>
+    <div class="eval-actions">
+      <button id="evalRun">跑一次评估</button>
+      <button id="evalClose">关上</button>
+    </div>
+    <div id="evalList"></div>
+    <div class="eval-add">
+      <input id="evalQuery" placeholder="新查询，比如：用户喜欢什么玩具" />
+      <input id="evalExpect" placeholder="期望关键词（可空=负例）" style="max-width:180px" />
+      <button id="evalAdd">加入</button>
+    </div>
+  </div>
+</div>
+
 <div id="auth"><div class="box"><h2>需要访问令牌</h2><input id="token" placeholder="MEMORY_TOKEN" /><button id="go">进入</button></div></div>
 <script>
 (function(){
@@ -94,6 +135,51 @@
     Promise.all([fetch('/graph',{headers:h}).then(function(r){if(r.status===401)throw new Error('401');return r.json()}),fetch('/stats',{headers:h}).then(function(r){return r.json()})]).then(function(a){if(a[0].status!=='ok')throw new Error(a[0].message||'加载失败');buildGraph(a[0].data);if(a[1].status==='ok')setStats(a[1].data);requestAnimationFrame(frame)}).catch(function(e){if(e.message==='401'){document.getElementById('auth').style.display='flex'}else{document.getElementById('stats').textContent=e.message}})
   }
   document.getElementById('go').onclick=function(){localStorage.setItem('memory_token',document.getElementById('token').value.trim());location.reload()};
+
+  function eh(){return {'Authorization':'Bearer '+token()}}
+  async function showEval(){
+    var v=document.getElementById('evalView');v.hidden=false;
+    try{
+      var d=await (await fetch('/eval',{headers:eh()})).json();
+      if(d.status!=='ok')throw new Error(d.message||'加载失败');
+      renderEval(d.data);
+    }catch(e){document.getElementById('evalMetrics').textContent=e.message}
+  }
+  function renderEval(d){
+    var m=d.metrics||{};
+    var box=document.getElementById('evalMetrics');box.innerHTML='';
+    [['@1',m['recall@1']],['@3',m['recall@3']],['@5',m['recall@5']],['MRR',m.mrr],['p50',(m.p50_ms||0)+'ms']].forEach(function(x){
+      var el=document.createElement('div');el.className='metric';
+      var b=document.createElement('b');b.textContent=x[1]===undefined?'-':(typeof x[1]==='number'?x[1]:x[1]);
+      var sp=document.createElement('span');sp.textContent=x[0];el.appendChild(b);el.appendChild(sp);box.appendChild(el);
+    });
+    var list=document.getElementById('evalList');list.innerHTML='';
+    (d.results||[]).forEach(function(r){
+      var row=document.createElement('div');row.className='eval-row '+(r.rank?'hit':'miss');
+      var q=document.createElement('div');q.className='q';q.textContent=r.query;
+      var rk=document.createElement('div');rk.className='rank';rk.textContent=r.rank?('#'+r.rank):'未命中';
+      row.appendChild(q);row.appendChild(rk);list.appendChild(row);
+    });
+    if(!(d.results||[]).length)list.innerHTML='<div style="color:#7f9aab;font-size:12px">还没有评估集，先在下面加一条。</div>';
+  }
+  document.getElementById('evalBtn').onclick=showEval;
+  document.getElementById('evalClose').onclick=function(){document.getElementById('evalView').hidden=true};
+  document.getElementById('evalRun').onclick=async function(){
+    this.disabled=true;this.textContent='跑…';
+    try{var d=await (await fetch('/eval/run',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},eh()),body:'{}'})).json();if(d.status==='ok')renderEval(d.data);else alert(d.message)}catch(e){alert(e.message)}
+    this.disabled=false;this.textContent='跑一次评估';
+  };
+  document.getElementById('evalAdd').onclick=async function(){
+    var q=document.getElementById('evalQuery').value.trim();if(!q)return;
+    var ex=document.getElementById('evalExpect').value.trim();
+    try{
+      var d=await (await fetch('/eval/query',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},eh()),body:JSON.stringify({query:q,expect_any:ex?[ex]:[]})})).json();
+      if(d.status!=='ok')throw new Error(d.message);
+      document.getElementById('evalQuery').value='';document.getElementById('evalExpect').value='';
+      await showEval();
+    }catch(e){alert(e.message)}
+  };
+
   addEventListener('resize',resize);resize();load();
 })();
 </script>
