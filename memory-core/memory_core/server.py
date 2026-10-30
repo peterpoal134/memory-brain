@@ -74,6 +74,18 @@ class MemoryService:
         self.store = Store(Path(db or DB))
         self.engine = MemoryEngine(self.store, embed=_embed if embed else None)
         self.lock = threading.RLock()
+        self.store.conn.execute(
+            """CREATE TABLE IF NOT EXISTS reminders (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id TEXT NOT NULL,
+                   text TEXT NOT NULL,
+                   due_at REAL NOT NULL,
+                   done INTEGER NOT NULL DEFAULT 0,
+                   created_at REAL NOT NULL,
+                   meta TEXT NOT NULL DEFAULT '{}'
+               )"""
+        )
+        self.store.conn.commit()
 
     @_locked
     def remember(self, data: dict) -> dict:
@@ -159,6 +171,37 @@ class MemoryService:
             "entities": [int(x) for x in str(r["ents"] or "").split(",") if x.strip()],
         } for r in rows]
         return {"nodes": nodes, "edges": edges, "memories": memories}
+
+    @_locked
+    def add_reminder(self, data: dict) -> dict:
+        text = str(data.get("text") or "").strip()
+        due = float(data.get("due_at") or 0)
+        if not text or due <= 0:
+            raise ValueError("text / due_at 不能为空")
+        cur = self.store.conn.execute(
+            "INSERT INTO reminders(user_id,text,due_at,created_at,meta) VALUES(?,?,?,?,?)",
+            (str(data.get("user_id") or "default"), text, due, time.time(),
+             json.dumps(data.get("meta") or {}, ensure_ascii=False)),
+        )
+        self.store.conn.commit()
+        return {"id": int(cur.lastrowid)}
+
+    @_locked
+    def due_reminders(self, user_id: str = "") -> list[dict]:
+        sql = "SELECT * FROM reminders WHERE done=0 AND due_at<=?"
+        args = [time.time()]
+        if user_id:
+            sql += " AND user_id=?"
+            args.append(user_id)
+        rows = self.store.conn.execute(sql + " ORDER BY due_at ASC LIMIT 50", args).fetchall()
+        return [{"id": int(r["id"]), "user_id": r["user_id"], "text": r["text"],
+                 "due_at": float(r["due_at"]), "meta": json.loads(r["meta"] or "{}")} for r in rows]
+
+    @_locked
+    def done_reminder(self, rid: int) -> bool:
+        cur = self.store.conn.execute("UPDATE reminders SET done=1 WHERE id=?", (int(rid),))
+        self.store.conn.commit()
+        return cur.rowcount > 0
 
     @_locked
     def stats(self) -> dict:
@@ -367,6 +410,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"status": "ok", "data": service().graph()})
             except Exception as exc:
                 self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path.startswith("/reminders/due"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                self._send(200, {"status": "ok", "data": service().due_reminders(str((q.get("user_id") or [""])[0]))})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
         elif self.path.startswith("/agent/state"):
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
@@ -456,6 +506,11 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                 else:
                     self._send(200, service().chat(data))
+            elif self.path == "/reminder":
+                self._send(200, {"status": "ok", "data": service().add_reminder(data)})
+            elif self.path == "/reminder/done":
+                ok = service().done_reminder(int(data.get("id") or 0))
+                self._send(200, {"status": "ok", "data": {"done": ok}})
             elif self.path == "/remember":
                 self._send(200, {"status": "ok", "data": service().remember(data)})
             elif self.path == "/recall":
