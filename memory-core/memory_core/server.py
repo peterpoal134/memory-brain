@@ -397,7 +397,7 @@ class MemoryService:
         return out
 
     def stream_chat(self, data: dict):
-        """真流式：把上游 SSE 逐块转给客户端。"""
+        """真流式：把上游 SSE 逐块转给客户端，结束后补写记忆。"""
         from http.client import HTTPConnection, HTTPSConnection
         from urllib.parse import urlparse
 
@@ -414,14 +414,54 @@ class MemoryService:
             body = resp.read().decode(errors="replace")
             conn.close()
             raise RuntimeError(f"upstream {resp.status}: {body[:200]}")
+
+        user = ""
+        for m in reversed(payload.get("messages") or []):
+            if m.get("role") == "user":
+                user = str(m.get("content") or "")
+                break
+        parts: list[str] = []
+        buf = ""
+        completed = False
+
+        def eat(text: str) -> None:
+            nonlocal buf
+            buf += text
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(raw)
+                    delta = obj["choices"][0].get("delta") or {}
+                    if delta.get("content"):
+                        parts.append(str(delta["content"]))
+                except Exception:
+                    continue
+
         try:
             while True:
                 chunk = resp.read(2048)
                 if not chunk:
                     break
+                eat(chunk.decode("utf-8", errors="replace"))
                 yield chunk
+            completed = True
         finally:
             conn.close()
+
+        if completed and parts and data.get("auto_remember", True) and AUTO_REMEMBER:
+            try:
+                uid = str(data.get("user") or "default")
+                sid = str(data.get("session_id") or "private")
+                self.remember_turn(uid, sid, "user", user)
+                self.remember_turn(uid, sid, "assistant", "".join(parts))
+            except Exception:
+                pass
 
     @_locked
     def report(self) -> str:

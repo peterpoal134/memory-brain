@@ -140,13 +140,14 @@
   async function showEval(){
     var v=document.getElementById('evalView');v.hidden=false;
     try{
-      var d=await (await fetch('/eval',{headers:eh()})).json();
+      var r=await Promise.all([fetch('/eval',{headers:eh()}),fetch('/eval/queries',{headers:eh()})]);
+      var d=await r[0].json(); var qs=await r[1].json();
       if(d.status!=='ok')throw new Error(d.message||'加载失败');
-      renderEval(d.data);
+      renderEval(d.data, (qs.data||{}).queries||[]);
     }catch(e){document.getElementById('evalMetrics').textContent=e.message}
   }
-  function renderEval(d){
-    var m=d.metrics||{};
+  function renderEval(d, qs){
+    qs=qs||[]; var m=d.metrics||{};
     var box=document.getElementById('evalMetrics');box.innerHTML='';
     [['@1',m['recall@1']],['@3',m['recall@3']],['@5',m['recall@5']],['MRR',m.mrr],['p50',(m.p50_ms||0)+'ms']].forEach(function(x){
       var el=document.createElement('div');el.className='metric';
@@ -160,7 +161,11 @@
       var rk=document.createElement('div');rk.className='rank';rk.textContent=r.rank?('#'+r.rank):'未命中';
       row.appendChild(q);row.appendChild(rk);list.appendChild(row);
     });
-    if(!(d.results||[]).length)list.innerHTML='<div style="color:#7f9aab;font-size:12px">还没有评估集，先在下面加一条。</div>';
+    if(!(d.results||[]).length){
+      if(qs.length){
+        qs.forEach(function(q){var row=document.createElement('div');row.className='eval-row';var a=document.createElement('div');a.className='q';a.textContent=q.query;var b=document.createElement('div');b.className='rank';b.textContent='未跑';row.appendChild(a);row.appendChild(b);list.appendChild(row)});
+      }else list.innerHTML='<div style="color:#7f9aab;font-size:12px">还没有评估集，先在下面加一条。</div>';
+    }
   }
   document.getElementById('evalBtn').onclick=showEval;
   if(location.hash==='#eval')setTimeout(showEval,300);
