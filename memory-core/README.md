@@ -80,6 +80,36 @@ POST /archive  归档
 
 不需要安装 AstrBot，也不需要它的插件 API。
 
+## 直接当 OpenAI 接口用
+
+qqbridge、DSH 或任何支持 OpenAI 格式的客户端，可以直接把 base_url 指过来：
+
+```bash
+MEMORY_LLM_BASE=https://api.deepseek.com/v1 \
+MEMORY_LLM_KEY=sk-xxx \
+MEMORY_LLM_MODEL=deepseek-chat \
+MEMORY_TOKEN=local-token \
+MEMORY_DB=./data/brain.db \
+python -m memory_core.server
+```
+
+客户端配置：
+
+```
+base_url = http://127.0.0.1:8780/v1
+api_key  = local-token
+model    = memory-core
+```
+
+每次请求会：
+
+1. 取最后一条用户消息召回记忆
+2. 把记忆作为 system 拼到最前面
+3. 转发给上游模型
+4. 可选：`MEMORY_AUTO_REMEMBER=1` 时把用户消息写回记忆库
+
+注意：这一层只加记忆，不带人格、情绪和表达层。要完整角色，还是用 AstrBot 插件版。
+
 ## 说明
 
 - 这是从 AstrBot 插件版抽出的核心，不包含人格、情绪、表达层

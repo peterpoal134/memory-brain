@@ -33,6 +33,10 @@ PORT = int(os.environ.get("MEMORY_PORT", "8780"))
 TOKEN = os.environ.get("MEMORY_TOKEN", "")
 EMBED_URL = os.environ.get("MEMORY_EMBED_URL", "http://127.0.0.1:11434/api/embed")
 EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "bge-m3")
+LLM_BASE = os.environ.get("MEMORY_LLM_BASE", "").rstrip("/")
+LLM_KEY = os.environ.get("MEMORY_LLM_KEY", "")
+LLM_MODEL = os.environ.get("MEMORY_LLM_MODEL", "deepseek-chat")
+AUTO_REMEMBER = os.environ.get("MEMORY_AUTO_REMEMBER", "0") == "1"
 
 
 def _embed(text: str):
@@ -109,6 +113,41 @@ class MemoryService:
         s["avg_importance"] = round(self.engine._avg_importance(), 3)
         return s
 
+    def chat(self, data: dict) -> dict:
+        """OpenAI 兼容入口：自动召回并拼进 system，再转发给上游模型。"""
+        if not LLM_BASE:
+            raise RuntimeError("没有配置 MEMORY_LLM_BASE")
+        msgs = list(data.get("messages") or [])
+        user = ""
+        for m in reversed(msgs):
+            if m.get("role") == "user":
+                user = str(m.get("content") or "")
+                break
+        block = self.recall({"query": user, "k": 5}).get("block") if user else ""
+        if block:
+            msgs = [{"role": "system", "content": "以下是你记得的旧事，用来接话，不要逐条复述：\n" + block}] + msgs
+        payload = {
+            "model": data.get("model") or LLM_MODEL,
+            "messages": msgs,
+            "temperature": data.get("temperature", 0.7),
+        }
+        if data.get("max_tokens"):
+            payload["max_tokens"] = int(data["max_tokens"])
+        req = urllib.request.Request(
+            LLM_BASE + "/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {LLM_KEY}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as r:
+            out = json.loads(r.read().decode())
+        if AUTO_REMEMBER and user:
+            try:
+                self.remember({"text": user, "kind": "episode", "importance": 0.4, "visibility": "private", "source": "chat"})
+            except Exception:
+                pass
+        return out
+
     def report(self) -> str:
         from . import health
 
@@ -154,7 +193,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._auth():
             self._send(401, {"status": "error", "message": "unauthorized"})
             return
-        if self.path == "/health":
+        if self.path == "/v1/models":
+            self._send(200, {"object": "list", "data": [{"id": "memory-core", "object": "model"}]})
+        elif self.path == "/health":
             try:
                 self._send(200, {"status": "ok", "report": service().report()})
             except Exception as exc:
@@ -178,7 +219,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
-            if self.path == "/remember":
+            if self.path == "/v1/chat/completions":
+                if data.get("stream"):
+                    self._send(400, {"status": "error", "message": "stream 暂不支持"})
+                else:
+                    self._send(200, service().chat(data))
+            elif self.path == "/remember":
                 self._send(200, {"status": "ok", "data": service().remember(data)})
             elif self.path == "/recall":
                 self._send(200, {"status": "ok", "data": service().recall(data)})
