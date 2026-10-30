@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,11 +60,21 @@ def _embed(text: str):
         return None
 
 
+def _locked(fn):
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MemoryService:
     def __init__(self, db: str | None = None, embed=True):
         self.store = Store(Path(db or DB))
         self.engine = MemoryEngine(self.store, embed=_embed if embed else None)
+        self.lock = threading.RLock()
 
+    @_locked
     def remember(self, data: dict) -> dict:
         text = str(data.get("text") or "").strip()
         if not text:
@@ -85,6 +96,7 @@ class MemoryService:
         )
         return {"id": mid}
 
+    @_locked
     def recall(self, data: dict) -> dict:
         q = str(data.get("query") or "").strip()
         if not q:
@@ -115,6 +127,7 @@ class MemoryService:
         block = "\n".join(lines)
         return {"hits": out, "block": block}
 
+    @_locked
     def graph(self) -> dict:
         raw = self.store.graph(limit=240)
         nodes = [
@@ -146,6 +159,7 @@ class MemoryService:
         } for r in rows]
         return {"nodes": nodes, "edges": edges, "memories": memories}
 
+    @_locked
     def stats(self) -> dict:
         s = self.store.stats()
         s["avg_importance"] = round(self.engine._avg_importance(), 3)
@@ -163,7 +177,13 @@ class MemoryService:
                 break
         block = self.recall({"query": user, "k": 5}).get("block") if user else ""
         if block:
-            msgs = [{"role": "system", "content": "以下是你记得的旧事，用来接话，不要逐条复述：\n" + block}] + msgs
+            memory_system = "以下是你记得的旧事，用来接话，不要逐条复述：\n" + block
+            if msgs and msgs[0].get("role") == "system":
+                msgs = list(msgs)
+                msgs[0] = dict(msgs[0])
+                msgs[0]["content"] = memory_system + "\n\n" + str(msgs[0].get("content") or "")
+            else:
+                msgs = [{"role": "system", "content": memory_system}] + msgs
         payload = {
             "model": data.get("model") or LLM_MODEL,
             "messages": msgs,
@@ -192,10 +212,28 @@ class MemoryService:
                 pass
         return out
 
+    @_locked
     def report(self) -> str:
         from . import health
 
         return health.report(self.store)
+
+    @_locked
+    def decay(self, data: dict) -> dict:
+        return {"affected": self.engine.decay(
+            float(data.get("rate") or 0.01),
+            protect_names=data.get("protect_names") or [],
+            core_floor=float(data.get("core_floor") or 0.45),
+            emotion_factor=float(data.get("emotion_factor") or 0.4),
+        )}
+
+    @_locked
+    def archive(self, data: dict) -> dict:
+        return {"archived": self.engine.archive(
+            importance_below=float(data.get("importance_below") or 0.3),
+            older_than_days=float(data.get("older_than_days") or 30),
+            protect_days=float(data.get("protect_days") or 30),
+        )}
 
 
 SERVICE: MemoryService | None = None
@@ -273,6 +311,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n > 8 * 1024 * 1024:
+                self._send(413, {"status": "error", "message": "body too large"})
+                return
             data = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
         except Exception as exc:
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
@@ -286,9 +327,17 @@ class Handler(BaseHTTPRequestHandler):
                         text = out["choices"][0]["message"]["content"]
                     except Exception:
                         pass
+                    delta = {"role": "assistant"}
+                    if text:
+                        delta["content"] = text
+                    try:
+                        if out["choices"][0]["message"].get("tool_calls"):
+                            delta["tool_calls"] = out["choices"][0]["message"]["tool_calls"]
+                    except Exception:
+                        pass
                     chunk = {"id": out.get("id", "chatcmpl"), "object": "chat.completion.chunk",
                              "created": out.get("created", int(time.time())), "model": out.get("model", "memory-core"),
-                             "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]}
+                             "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
                     done = {"id": out.get("id", "chatcmpl"), "object": "chat.completion.chunk",
                             "created": out.get("created", int(time.time())), "model": out.get("model", "memory-core"),
                             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
@@ -308,20 +357,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/recall":
                 self._send(200, {"status": "ok", "data": service().recall(data)})
             elif self.path == "/decay":
-                n = service().engine.decay(
-                    float(data.get("rate") or 0.01),
-                    protect_names=data.get("protect_names") or [],
-                    core_floor=float(data.get("core_floor") or 0.45),
-                    emotion_factor=float(data.get("emotion_factor") or 0.4),
-                )
-                self._send(200, {"status": "ok", "data": {"affected": n}})
+                self._send(200, {"status": "ok", "data": service().decay(data)})
             elif self.path == "/archive":
-                n = service().engine.archive(
-                    importance_below=float(data.get("importance_below") or 0.3),
-                    older_than_days=float(data.get("older_than_days") or 30),
-                    protect_days=float(data.get("protect_days") or 30),
-                )
-                self._send(200, {"status": "ok", "data": {"archived": n}})
+                self._send(200, {"status": "ok", "data": service().archive(data)})
             else:
                 self._send(404, {"status": "error", "message": "not found"})
         except Exception as exc:
