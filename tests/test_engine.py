@@ -665,8 +665,8 @@ class ProfileInjectionTest(unittest.TestCase):
         self.store = Store(Path(tempfile.mkdtemp()) / "brain.db")
         e = self.store.upsert_entity("用户", "person")
         self.store.set_profile(e, "她喜欢甜的，最近没胃口。")
-        b = self.store.upsert_entity("白菜", "person")
-        self.store.set_profile(b, "白菜爱越狱，胆子大。")
+        b = self.store.upsert_entity("宠物", "person")
+        self.store.set_profile(b, "宠物爱越狱，胆子大。")
         self.store.upsert_entity("路人", "person")
 
     def tearDown(self):
@@ -678,7 +678,7 @@ class ProfileInjectionTest(unittest.TestCase):
 
     def test_profiled_entities_only_with_profile(self):
         names = [r["name"] for r in self.store.profiled_entities()]
-        self.assertEqual(sorted(names), ["用户", "白菜"])
+        self.assertEqual(sorted(names), ["用户", "宠物"])
 
     def test_profile_block(self):
         import importlib
@@ -705,10 +705,10 @@ class ProfileInjectionTest(unittest.TestCase):
                 def get_message_str(self): return self._t
                 def get_group_id(self): return self._g
 
-            block = plugin._profile_block(E("用户", "白菜今天又越狱了"))
+            block = plugin._profile_block(E("用户", "宠物今天又越狱了"))
             self.assertIn("【对他们的印象】", block)
             self.assertIn("用户", block)
-            self.assertIn("白菜", block)
+            self.assertIn("宠物", block)
 
             empty = plugin._profile_block(E("路人", "在吗"))
             self.assertEqual(empty, "")
