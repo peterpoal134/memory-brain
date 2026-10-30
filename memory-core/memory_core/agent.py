@@ -139,11 +139,10 @@ class AgentService:
             pass
         if data.get("remember", True):
             try:
-                self.memory.remember({"text": text, "kind": "episode", "importance": 0.4,
-                                      "visibility": "group" if group else "private", "source": "agent"})
+                sid = str(data.get("session_id") or ("group" if group else "private"))
+                self.memory.remember_turn(user_id, sid, "user", text)
                 if reply:
-                    self.memory.remember({"text": reply[:2000], "kind": "episode", "importance": 0.35,
-                                          "visibility": "group" if group else "private", "source": "agent"})
+                    self.memory.remember_turn(user_id, sid, "assistant", reply)
             except Exception:
                 pass
         self._put("mood", m)

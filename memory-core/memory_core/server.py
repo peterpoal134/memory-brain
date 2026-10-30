@@ -48,6 +48,8 @@ COMPRESS_CHARS = int(os.environ.get("MEMORY_COMPRESS_CHARS", "20000"))
 COMPRESS_KEEP = int(os.environ.get("MEMORY_COMPRESS_KEEP", "10"))
 COMPRESS_TURNS = int(os.environ.get("MEMORY_COMPRESS_TURNS", "24"))
 COMPRESS_RATIO = float(os.environ.get("MEMORY_COMPRESS_KEEP_RATIO", "0.15"))
+RAW_KEEP = int(os.environ.get("MEMORY_RAW_KEEP", "2000"))
+BATCH_SIZE = int(os.environ.get("MEMORY_BATCH_SIZE", "12"))
 
 
 _EMBED_DOWN_UNTIL = 0.0
@@ -83,6 +85,20 @@ class MemoryService:
         self.store = Store(Path(db or DB))
         self.engine = MemoryEngine(self.store, embed=_embed if embed else None)
         self.lock = threading.RLock()
+        self.store.conn.executescript(
+            """CREATE TABLE IF NOT EXISTS raw_messages (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id TEXT NOT NULL,
+                   session_id TEXT NOT NULL,
+                   role TEXT NOT NULL,
+                   text TEXT NOT NULL,
+                   created_at REAL NOT NULL
+               );
+               CREATE TABLE IF NOT EXISTS chat_batch_state (
+                   session TEXT PRIMARY KEY,
+                   last_id INTEGER NOT NULL
+               );"""
+        )
         self.store.conn.execute(
             """CREATE TABLE IF NOT EXISTS reminders (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,6 +221,53 @@ class MemoryService:
         return str(out["choices"][0]["message"]["content"] or "")
 
     @_locked
+    def remember_turn(self, user_id: str, session_id: str, role: str, text: str) -> None:
+        """混合模式：原文进有上限的 raw 缓冲，攒够一批再总结成一条长期记忆。"""
+        text = str(text or "").strip()
+        if not text:
+            return
+        uid = str(user_id or "default")
+        sid = str(session_id or "private")
+        cur = self.store.conn.execute(
+            "INSERT INTO raw_messages(session_id,role,sender,text,created_at) VALUES(?,?,?,?,?)",
+            (sid, str(role or "user"), uid, text[:4000], time.time()),
+        )
+        self.store.conn.commit()
+        self.store.conn.execute(
+            "DELETE FROM raw_messages WHERE id NOT IN (SELECT id FROM raw_messages ORDER BY id DESC LIMIT ?)",
+            (int(RAW_KEEP),),
+        )
+        self.store.conn.commit()
+        key = f"{uid}:{sid}"
+        row = self.store.conn.execute("SELECT last_id FROM chat_batch_state WHERE session=?", (key,)).fetchone()
+        last_id = int(row[0]) if row else 0
+        rows = self.store.conn.execute(
+            "SELECT id,role,text FROM raw_messages WHERE sender=? AND session_id=? AND id>? ORDER BY id ASC LIMIT ?",
+            (uid, sid, last_id, int(BATCH_SIZE)),
+        ).fetchall()
+        if len(rows) < int(BATCH_SIZE):
+            return
+        body = "\n".join(f"{r['role']}: {r['text']}" for r in rows)
+        try:
+            summary = str(self.summarize(body) or "").strip()
+        except Exception:
+            summary = ""
+        if not summary:
+            summary = body[:600]
+        vis = "group" if "group" in sid else "private"
+        self.remember({
+            "text": "[对话批次] " + summary, "kind": "episode", "importance": 0.45,
+            "visibility": vis, "source": "chat_batch",
+            "meta": {"session": sid, "count": len(rows)},
+        })
+        self.store.conn.execute(
+            "INSERT INTO chat_batch_state(session,last_id) VALUES(?,?) "
+            "ON CONFLICT(session) DO UPDATE SET last_id=excluded.last_id",
+            (key, int(rows[-1]["id"])),
+        )
+        self.store.conn.commit()
+
+    @_locked
     def add_reminder(self, data: dict) -> dict:
         text = str(data.get("text") or "").strip()
         due = float(data.get("due_at") or 0)
@@ -292,16 +355,16 @@ class MemoryService:
         if AUTO_REMEMBER and user and data.get("auto_remember", True):
             vis = "group" if "group" in str(data.get("session_id") or "") else "private"
             try:
-                self.remember({"text": user, "kind": "episode", "importance": 0.4,
-                               "visibility": vis, "source": "chat"})
+                uid = str(data.get("user") or "default")
+                sid = str(data.get("session_id") or ("group" if vis == "group" else "private"))
+                self.remember_turn(uid, sid, "user", user)
                 reply = ""
                 try:
                     reply = str(out["choices"][0]["message"]["content"] or "")
                 except Exception:
                     pass
                 if reply:
-                    self.remember({"text": reply[:2000], "kind": "episode", "importance": 0.35,
-                                   "visibility": vis, "source": "chat"})
+                    self.remember_turn(uid, sid, "assistant", reply)
             except Exception:
                 pass
         return out
