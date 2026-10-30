@@ -105,6 +105,8 @@ class AgentService:
         })
         block = recall.get("block") or ""
         system = str(self.cfg["character"].get("system_prompt") or "你是一个聊天助手。")
+        if data.get("keep_system") and data.get("base_system"):
+            system = str(data.get("base_system") or "")
         system += f"\n\n[此刻] 愉悦 {m.get('p', 0):.2f}，唤醒 {m.get('a', 0):.2f}，支配 {m.get('d', 0):.2f}"
         name, score = persona.top(m)
         if name:
@@ -114,11 +116,13 @@ class AgentService:
             system += f"\n[表达] {h}"
         if block:
             system += "\n\n[你记得的旧事]\n" + block
+        history = []
+        for m in data.get("history") or []:
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content"):
+                history.append({"role": m["role"], "content": m["content"]})
+        messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": text}]
         out = self.memory.chat({
-            "model": data.get("model"), "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": text},
-            ],
+            "model": data.get("model"), "messages": messages,
             "temperature": data.get("temperature", 0.7),
             "max_tokens": data.get("max_tokens"),
             "_skip_recall": True,

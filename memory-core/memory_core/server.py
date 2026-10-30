@@ -297,11 +297,26 @@ def openai_agent(data: dict) -> dict:
         if m.get("role") == "user":
             text = str(m.get("content") or "")
             break
+    msgs = data.get("messages") or []
+    base_system = ""
+    history = []
+    last_user = -1
+    for i, m in enumerate(msgs):
+        if m.get("role") == "system" and not base_system:
+            base_system = str(m.get("content") or "")
+        if m.get("role") == "user":
+            last_user = i
+    for i, m in enumerate(msgs):
+        if i != last_user and m.get("role") in ("user", "assistant") and m.get("content"):
+            history.append({"role": m["role"], "content": m["content"]})
     uid = str(data.get("user") or "default")
     out = agent().chat({"message": text, "user_id": uid,
                         "session_id": str(data.get("session_id") or ""),
                         "model": data.get("model"), "temperature": data.get("temperature", 0.7),
-                        "max_tokens": data.get("max_tokens")})
+                        "max_tokens": data.get("max_tokens"),
+                        "base_system": base_system,
+                        "keep_system": os.environ.get("MEMORY_AGENT_KEEP_SYSTEM") == "1",
+                        "history": history})
     return {"id": "chatcmpl-agent", "object": "chat.completion", "created": int(time.time()),
             "model": data.get("model") or "agent-core",
             "choices": [{"index": 0, "message": {"role": "assistant", "content": out["reply"]}, "finish_reason": "stop"}],

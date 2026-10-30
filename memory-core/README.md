@@ -128,6 +128,44 @@ POST /v1/agent/chat/completions
 
 注意：这一层只加记忆，不带人格、情绪和表达层。要完整角色，还是用 AstrBot 插件版。
 
+## 从旧记忆导入
+
+不会修改原库，只读源文件：
+
+```bash
+python -m memory_core.import_data \
+  --to ./data/brain.db \
+  --from-brain /path/to/AstrBot/brain.db
+```
+
+也支持 JSONL：
+
+```bash
+python -m memory_core.import_data --to ./data/brain.db --from-jsonl chat.jsonl
+```
+
+会导入记忆、可见性、向量、实体和关系；重复文本跳过。
+
+## 已有角色的接法
+
+如果网友已经有一只养好的鱼，不想换人设：
+
+```bash
+MEMORY_AGENT=1 \
+MEMORY_AGENT_KEEP_SYSTEM=1 \
+AGENT_CONFIG=./config.example.json \
+python -m memory_core.server
+```
+
+这样：
+
+- 他们原来的 `system` 保留
+- 只追加情绪状态和记忆
+- 原来的对话历史也保留
+- 他们的人设不会被配置里的“助手”覆盖
+
+不设 `MEMORY_AGENT_KEEP_SYSTEM` 时，才会用配置里的 `system_prompt`。
+
 ## 说明
 
 - 这是从 AstrBot 插件版抽出的核心，不包含人格、情绪、表达层
