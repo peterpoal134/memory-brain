@@ -86,6 +86,8 @@ class MemoryService:
         self.store = Store(Path(db or DB))
         self.engine = MemoryEngine(self.store, embed=_embed if embed else None)
         self.lock = threading.RLock()
+        self._batch_guard = threading.Lock()
+        self._batch_locks: dict[str, threading.Lock] = {}
         self.store.conn.executescript(
             """CREATE TABLE IF NOT EXISTS raw_messages (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -241,7 +243,14 @@ class MemoryService:
             out = json.loads(r.read().decode())
         return str(out["choices"][0]["message"]["content"] or "")
 
-    @_locked
+    def _session_lock(self, key: str) -> threading.Lock:
+        with self._batch_guard:
+            lock = self._batch_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._batch_locks[key] = lock
+            return lock
+
     def remember_turn(self, user_id: str, session_id: str, role: str, text: str) -> None:
         """混合模式：原文进有上限的 raw 缓冲，攒够一批再总结成一条长期记忆。"""
         text = str(text or "").strip()
@@ -249,6 +258,11 @@ class MemoryService:
             return
         uid = str(user_id or "default")
         sid = str(session_id or "private")
+        key = f"{uid}:{sid}"
+        with self._session_lock(key):
+            self._remember_turn(uid, sid, role, text, key)
+
+    def _remember_turn(self, uid: str, sid: str, role: str, text: str, key: str) -> None:
         cur = self.store.conn.execute(
             "INSERT INTO raw_messages(session_id,role,sender,text,created_at) VALUES(?,?,?,?,?)",
             (sid, str(role or "user"), uid, text[:4000], time.time()),
@@ -259,7 +273,6 @@ class MemoryService:
             (int(RAW_KEEP),),
         )
         self.store.conn.commit()
-        key = f"{uid}:{sid}"
         row = self.store.conn.execute("SELECT last_id FROM chat_batch_state WHERE session=?", (key,)).fetchone()
         last_id = int(row[0]) if row else 0
         rows = self.store.conn.execute(
@@ -695,6 +708,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
+            if self.path in ("/v1/chat/completions", "/v1/agent/chat/completions", "/agent/chat"):
+                if not (data.get("user") or data.get("user_id") or data.get("session_id")):
+                    self._send(400, {"status": "error", "message": "必须带 user 字段（或 user_id / session_id），避免不同用户共用 default 记忆"})
+                    return
             if self.path == "/maintenance/run":
                 out = maintenance().run(float(data.get("similarity") or 0.92))
                 self._send(200, {"status": "ok", "data": out})

@@ -17,4 +17,4 @@ memory-core = "memory_core.server:main"
 include = ["memory_core*"]
 
 [tool.setuptools.package-data]
-memory_core = ["panel.html"]
+memory_core = ["panel.html", "config.example.json"]
