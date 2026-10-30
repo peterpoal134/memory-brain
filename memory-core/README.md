@@ -13,8 +13,10 @@
 ```bash
 cd memory-core
 python3 -m venv .venv && . .venv/bin/activate
-pip install numpy
+pip install .
 ```
+
+装完可以直接用命令 `memory-core`，或者 `python -m memory_core.server`。
 
 ## 启动
 
