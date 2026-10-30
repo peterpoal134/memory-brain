@@ -124,7 +124,7 @@ POST /v1/agent/chat/completions
 1. 取最后一条用户消息召回记忆
 2. 把记忆作为 system 拼到最前面
 3. 转发给上游模型
-4. 可选：`MEMORY_AUTO_REMEMBER=1` 时把用户消息写回记忆库
+4. 默认把用户消息和助手回复写回记忆库；`MEMORY_AUTO_REMEMBER=0` 关闭
 
 注意：这一层只加记忆，不带人格、情绪和表达层。要完整角色，还是用 AstrBot 插件版。
 

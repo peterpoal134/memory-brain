@@ -126,6 +126,7 @@ class AgentService:
             "temperature": data.get("temperature", 0.7),
             "max_tokens": data.get("max_tokens"),
             "_skip_recall": True,
+            "auto_remember": False,
         })
         try:
             reply = out["choices"][0]["message"]["content"] or ""
@@ -140,6 +141,9 @@ class AgentService:
             try:
                 self.memory.remember({"text": text, "kind": "episode", "importance": 0.4,
                                       "visibility": "group" if group else "private", "source": "agent"})
+                if reply:
+                    self.memory.remember({"text": reply[:2000], "kind": "episode", "importance": 0.35,
+                                          "visibility": "group" if group else "private", "source": "agent"})
             except Exception:
                 pass
         self._put("mood", m)

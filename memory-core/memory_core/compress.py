@@ -8,12 +8,13 @@ import time
 
 class ContextCompressor:
     def __init__(self, memory, budget_chars: int = 20000, keep_recent: int = 10,
-                 max_turns: int = 24, keep_ratio: float = 0.15):
+                 max_turns: int = 24, keep_ratio: float = 0.15, summary_memory: bool = True):
         self.memory = memory
         self.budget = max(2000, int(budget_chars))
         self.keep = max(2, int(keep_recent))
         self.max_turns = max(1, int(max_turns))
         self.keep_ratio = max(0.05, min(0.5, float(keep_ratio)))
+        self.summary_memory = bool(summary_memory)
         self.conn = memory.store.conn
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS ctx_summary (
@@ -36,7 +37,7 @@ class ContextCompressor:
         )
         self.conn.commit()
 
-    def compress(self, messages: list[dict], key: str = "default") -> list[dict]:
+    def compress(self, messages: list[dict], key: str = "default", visibility: str = "private") -> list[dict]:
         msgs = [m for m in messages if isinstance(m, dict)]
         total = sum(len(str(m.get("content") or "")) for m in msgs)
         system = [m for m in msgs if m.get("role") == "system"]
@@ -57,7 +58,17 @@ class ContextCompressor:
         if not summary:
             summary = prev or old_text[-800:]
         summary = summary[:2000]
+        changed = summary != prev
         self._save(key, summary)
+        if self.summary_memory and changed:
+            try:
+                self.memory.remember({
+                    "text": "[对话摘要] " + summary, "kind": "episode", "importance": 0.55,
+                    "visibility": visibility, "source": "compression",
+                    "meta": {"session": key},
+                })
+            except Exception:
+                pass
         out = list(system)
         out.append({"role": "system", "content": "[之前对话摘要] " + summary})
         out.extend(recent)

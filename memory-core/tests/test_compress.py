@@ -30,6 +30,8 @@ class TestCompress(unittest.TestCase):
         self.assertEqual(out[0]["role"], "system")
         self.assertIn("之前对话摘要", out[1]["content"])
         self.assertEqual(out[-1]["content"], msgs[-1]["content"])
+        hits = self.mem.recall({"query": "之前聊过", "k": 3})["hits"]
+        self.assertTrue(any("对话摘要" in h["text"] or "工作" in h["text"] for h in hits))
 
     def test_short_passthrough(self):
         msgs = [{"role": "user", "content": "短"}]

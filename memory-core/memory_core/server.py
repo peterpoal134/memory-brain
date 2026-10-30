@@ -41,7 +41,8 @@ EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "bge-m3")
 LLM_BASE = os.environ.get("MEMORY_LLM_BASE", "").rstrip("/")
 LLM_KEY = os.environ.get("MEMORY_LLM_KEY", "")
 LLM_MODEL = os.environ.get("MEMORY_LLM_MODEL", "deepseek-chat")
-AUTO_REMEMBER = os.environ.get("MEMORY_AUTO_REMEMBER", "0") == "1"
+AUTO_REMEMBER = os.environ.get("MEMORY_AUTO_REMEMBER", "1") == "1"
+SUMMARY_MEMORY = os.environ.get("MEMORY_SUMMARY_MEMORY", "1") == "1"
 COMPRESS = os.environ.get("MEMORY_COMPRESS", "1") != "0"
 COMPRESS_CHARS = int(os.environ.get("MEMORY_COMPRESS_CHARS", "20000"))
 COMPRESS_KEEP = int(os.environ.get("MEMORY_COMPRESS_KEEP", "10"))
@@ -288,9 +289,19 @@ class MemoryService:
         )
         with urllib.request.urlopen(req, timeout=120) as r:
             out = json.loads(r.read().decode())
-        if AUTO_REMEMBER and user:
+        if AUTO_REMEMBER and user and data.get("auto_remember", True):
+            vis = "group" if "group" in str(data.get("session_id") or "") else "private"
             try:
-                self.remember({"text": user, "kind": "episode", "importance": 0.4, "visibility": "private", "source": "chat"})
+                self.remember({"text": user, "kind": "episode", "importance": 0.4,
+                               "visibility": vis, "source": "chat"})
+                reply = ""
+                try:
+                    reply = str(out["choices"][0]["message"]["content"] or "")
+                except Exception:
+                    pass
+                if reply:
+                    self.remember({"text": reply[:2000], "kind": "episode", "importance": 0.35,
+                                   "visibility": vis, "source": "chat"})
             except Exception:
                 pass
         return out
@@ -371,7 +382,7 @@ def compressor() -> ContextCompressor:
     global COMPRESSOR
     if COMPRESSOR is None:
         COMPRESSOR = ContextCompressor(service(), COMPRESS_CHARS, COMPRESS_KEEP,
-                                       COMPRESS_TURNS, COMPRESS_RATIO)
+                                       COMPRESS_TURNS, COMPRESS_RATIO, SUMMARY_MEMORY)
     return COMPRESSOR
 
 
@@ -393,7 +404,7 @@ def openai_agent(data: dict) -> dict:
     msgs = data.get("messages") or []
     if COMPRESS and msgs:
         base = next((str(m.get("content") or "") for m in msgs if m.get("role") == "system"), "")
-        msgs = compressor().compress(msgs, ContextCompressor.key_for(str(data.get("user") or "default"), base))
+        msgs = compressor().compress(msgs, ContextCompressor.key_for(str(data.get("user") or "default"), base), visibility="group" if "group" in str(data.get("session_id") or "") else "private")
     text = ""
     for m in reversed(msgs):
         if m.get("role") == "user":
@@ -599,7 +610,7 @@ class Handler(BaseHTTPRequestHandler):
                     if COMPRESS and data.get("messages"):
                         data = dict(data)
                         base = next((str(m.get("content") or "") for m in data["messages"] if m.get("role") == "system"), "")
-                        data["messages"] = compressor().compress(data["messages"], ContextCompressor.key_for(str(data.get("user") or "default"), base))
+                        data["messages"] = compressor().compress(data["messages"], ContextCompressor.key_for(str(data.get("user") or "default"), base), visibility="group" if "group" in str(data.get("session_id") or "") else "private")
                     self._send(200, service().chat(data))
             elif self.path == "/reminder":
                 self._send(200, {"status": "ok", "data": service().add_reminder(data)})
