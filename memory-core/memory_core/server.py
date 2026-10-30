@@ -29,6 +29,7 @@ from .agent import AgentService
 from .compress import ContextCompressor
 from .eval import EvalService
 from .life import LifeService
+from .maintenance import MaintenanceService
 from .engine import MemoryEngine
 from .store import Store
 
@@ -450,6 +451,7 @@ SERVICE: MemoryService | None = None
 AGENT: AgentService | None = None
 LIFE: LifeService | None = None
 EVAL: EvalService | None = None
+MAINT: MaintenanceService | None = None
 COMPRESSOR: ContextCompressor | None = None
 
 
@@ -473,6 +475,13 @@ def compressor() -> ContextCompressor:
         COMPRESSOR = ContextCompressor(service(), COMPRESS_CHARS, COMPRESS_KEEP,
                                        COMPRESS_TURNS, COMPRESS_RATIO, SUMMARY_MEMORY)
     return COMPRESSOR
+
+
+def maintenance() -> MaintenanceService:
+    global MAINT
+    if MAINT is None:
+        MAINT = MaintenanceService(service())
+    return MAINT
 
 
 def eval_service() -> EvalService:
@@ -567,6 +576,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"status": "ok", "data": service().graph()})
             except Exception as exc:
                 self._send(500, {"status": "error", "message": str(exc)})
+        elif self.path == "/conflicts":
+            try:
+                self._send(200, {"status": "ok", "data": {"conflicts": maintenance().conflicts()}})
+            except Exception as exc:
+                self._send(500, {"status": "error", "message": str(exc)})
         elif self.path == "/eval":
             try:
                 self._send(200, {"status": "ok", "data": eval_service().latest()})
@@ -641,7 +655,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"status": "error", "message": f"bad json: {exc}"})
             return
         try:
-            if self.path == "/digest/extract":
+            if self.path == "/maintenance/run":
+                out = maintenance().run(float(data.get("similarity") or 0.92))
+                self._send(200, {"status": "ok", "data": out})
+            elif self.path == "/conflicts/resolve":
+                ok = maintenance().resolve(int(data.get("id") or 0), str(data.get("keep") or "a"))
+                self._send(200, {"status": "ok", "data": {"done": ok}})
+            elif self.path == "/digest/extract":
                 from .digest import DigestService
                 self._send(200, {"status": "ok", "data": DigestService(service()).extract(str(data.get("text") or ""), str(data.get("visibility") or "private"))})
             elif self.path == "/digest/reflect":
