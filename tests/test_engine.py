@@ -678,7 +678,7 @@ class ProfileInjectionTest(unittest.TestCase):
 
     def test_profiled_entities_only_with_profile(self):
         names = [r["name"] for r in self.store.profiled_entities()]
-        self.assertEqual(sorted(names), ["用户", "宠物"])
+        self.assertEqual(sorted(names), sorted(["用户", "宠物"]))
 
     def test_profile_block(self):
         import importlib
