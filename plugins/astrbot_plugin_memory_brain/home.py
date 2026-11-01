@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""助手的房间与玩具库：生活层写，面板读，两边共用一个 JSON。"""
+"""房间与玩具库：生活层写，面板读，两边共用一个 JSON。"""
 from __future__ import annotations
 
 import base64
