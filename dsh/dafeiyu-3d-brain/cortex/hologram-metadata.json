@@ -1,0 +1,14 @@
+{
+  "lh": {
+    "strands": 620,
+    "vertices": 127464,
+    "segments": 63732,
+    "bytes": 2549284
+  },
+  "rh": {
+    "strands": 620,
+    "vertices": 124690,
+    "segments": 62345,
+    "bytes": 2493804
+  }
+}

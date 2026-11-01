@@ -1,0 +1,41 @@
+{
+  "author": "Anderson Winkler",
+  "source": "https://brainder.org/research/brain-for-blender/",
+  "license": "CC BY-SA 3.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
+  "transformation": "Centered; uniformly scaled to 3.65 units. Native RAS axes retained.",
+  "meshes": [
+    {
+      "file": "lh.bin",
+      "side": "lh",
+      "vertices": 144490,
+      "triangles": 288976,
+      "min": [
+        -1.4877088069915771,
+        -1.8250000476837158,
+        -1.2267621755599976
+      ],
+      "max": [
+        0.06809930503368378,
+        1.81039559841156,
+        1.279313087463379
+      ]
+    },
+    {
+      "file": "rh.bin",
+      "side": "rh",
+      "vertices": 145071,
+      "triangles": 290138,
+      "min": [
+        -0.0584404282271862,
+        -1.7564142942428589,
+        -1.279313087463379
+      ],
+      "max": [
+        1.4877088069915771,
+        1.8250000476837158,
+        1.2624123096466064
+      ]
+    }
+  ]
+}

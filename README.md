@@ -14,7 +14,8 @@
 
 - [AstrBot](docs/astrbot.md)
 - [qqbridge](memory-core/docs/qqbridge.md)
-- [DSH](memory-core/docs/dsh.md)
+- [DSH 窗口](dsh/README.md)
+- [DSH / memory-core](memory-core/docs/dsh.md)
 
 ## 它解决什么
 
