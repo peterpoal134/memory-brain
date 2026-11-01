@@ -47,14 +47,14 @@ python example.py
 
 **为什么：** 身份是判断的前提，不是判断的结论。
 
-一条「我奶奶熬的粥」写进记忆库，如果只跟别的记忆比，它可能跟谁都不冲突——
-库里本来就没有奶奶相关的记忆。
+一条「我亲属熬的粥」写进记忆库，如果只跟别的记忆比，它可能跟谁都不冲突——
+库里本来就没有亲属相关的记忆。
 
 但撞身份层，立刻被挡住：
 
 ```python
-view.identity.conflicts_with("我奶奶熬的粥")
-# → [{'identity': '我是 AI，没有亲属，没有童年', 'hit': '奶奶'}]
+view.identity.conflicts_with("我亲属熬的粥")
+# → [{'identity': '我是 AI，没有亲属，没有童年', 'hit': '亲属'}]
 ```
 
 **实现：** `why` 字段写清楚「为什么这是身份」，系统从里面抽词做冲突检测。
@@ -62,7 +62,7 @@ view.identity.conflicts_with("我奶奶熬的粥")
 ```python
 ident.add(
     "我是 AI，没有亲属，没有童年",
-    why="我没有爷爷、奶奶、外婆、外公，也没有小时候、童年",
+    why="我没有亲属，也没有小时候、童年",
 )
 ```
 
@@ -194,7 +194,7 @@ def my_llm(prompt: str, system: str, max_tokens: int) -> str:
 
 view = SelfView(conn, llm=my_llm)
 result = view.think("读了一会儿书", "看到福贵把家产输光了")
-# → {'id': 12, 'text': '他一句「跑起来了」，我竟有点得意。'}
+# → {'id': 12, 'text': '对方一句「跑起来了」，我竟有点得意。'}
 ```
 
 **`think()` 失败时默认静默返回 `None`**——情绪层挂了不该让主流程崩。
