@@ -177,7 +177,7 @@ python -m memory_core.server
 ## 平台接入
 
 - [AstrBot](../docs/astrbot.md)
-- [qqbridge](docs/qqbridge.md)
+- [qqbridge（本次未适配）](docs/qqbridge.md)
 - [DSH / 桌面窗口](docs/dsh.md)
 - 最小客户端：[examples/openai_client.py](examples/openai_client.py)
 

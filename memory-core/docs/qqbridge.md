@@ -1,3 +1,5 @@
+> **本次不适配 qqbridge。** 没有测试环境，也没有做适配器。下面的内容只保留作参考，不要当作已支持。
+
 # qqbridge 接入
 
 qqbridge 如果支持 OpenAI 兼容 provider，可以把 `memory-core` 当模型端点。

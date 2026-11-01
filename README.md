@@ -8,14 +8,16 @@
 ## 两种用法
 
 - **AstrBot 用户**：装 `plugins/` 下的插件，得到完整角色（记忆、情绪、生活层、面板）
-- **qqbridge / DSH 等非 AstrBot 平台**：用 [`memory-core/`](memory-core/README.md)，独立记忆服务 + 人格情绪 + 3D 面板
+- **DSH 桌面版**：用 [`dsh/`](dsh/README.md)，3D 大脑 + 跨会话开机包
+- **qqbridge**：本次**不适配**，也没有测试环境
 
 接入文档：
 
 - [AstrBot](docs/astrbot.md)
-- [qqbridge](memory-core/docs/qqbridge.md)
+- [qqbridge（本次未适配）](memory-core/docs/qqbridge.md)
 - [DSH 窗口](dsh/README.md)
-- [DSH / memory-core](memory-core/docs/dsh.md)
+- [memory-core + DSH](memory-core/docs/dsh.md)
+- [房间与玩具](docs/room.md)
 
 ## 它解决什么
 

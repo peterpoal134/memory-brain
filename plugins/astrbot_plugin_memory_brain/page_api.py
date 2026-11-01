@@ -53,6 +53,10 @@ class PageApi:
             ("/media", self.import_media, ["POST"], "导入媒体知识"),
             ("/lessons", self.make_lessons, ["POST"], "提炼道理"),
             ("/report", self.report, ["GET"], "运行报表"),
+            ("/home", self.home, ["GET"], "房间"),
+            ("/home/toy", self.home_toy, ["POST"], "送一个玩具"),
+            ("/home/books", self.home_books, ["GET"], "书架"),
+            ("/home/toy/delete", self.home_toy_delete, ["POST"], "删掉一个玩具"),
             ("/health", self.health, ["GET"], "记忆体检"),
             ("/health/fix", self.health_fix, ["POST"], "体检修复"),
             ("/conflicts", self.conflicts, ["GET"], "冲突列表"),
@@ -488,6 +492,62 @@ class PageApi:
             return _ok({"ok": bool(done), "text": rows[0]["text"] if rows else ""})
         except Exception as exc:
             logger.exception("[brain] 生成反思失败")
+            return _err(str(exc))
+
+
+    async def home(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        try:
+            return _ok(home_mod.snapshot())
+        except Exception as exc:
+            logger.exception("[brain] 读取房间失败")
+            return _err(str(exc))
+
+    async def home_toy(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        data = await request.json(default={}) or {}
+        try:
+            toy = home_mod.add_toy(
+                str(data.get("name") or ""), str(data.get("desc") or ""),
+                from_=str(data.get("from") or "你"),
+                img=str(data.get("img") or ""), image_data=str(data.get("image") or ""),
+                secret=bool(data.get("secret")),
+            )
+            try:
+                text = f"收到一个玩具：{toy['name']}。{toy.get('desc') or ''}".strip()
+                vec = await self.plugin._embed(text)
+                self.plugin.engine.remember(
+                    text, kind="fact", importance=0.65, source="home",
+                    visibility="private", meta={"toy": toy["name"]}, vector=vec,
+                )
+            except Exception:
+                logger.debug("[brain] 玩具记忆写入失败", exc_info=True)
+            effect = home_mod.gift_effect(str(self.plugin.config.get("owner_id") or ""))
+            return _ok({"toy": toy, "home": home_mod.snapshot(), "effect": effect})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def home_toy_delete(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        data = await request.json(default={}) or {}
+        try:
+            gone = home_mod.delete_toy(str(data.get("id") or ""))
+            if not gone:
+                return _err("没有这个玩具")
+            return _ok({"deleted": gone.get("name"), "home": home_mod.snapshot()})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def home_books(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        try:
+            return _ok(home_mod.books())
+        except Exception as exc:
+            logger.exception("[brain] 读取书架失败")
             return _err(str(exc))
 
     async def health(self) -> dict[str, Any]:
