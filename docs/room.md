@@ -9,7 +9,7 @@ life/home.json                 房间和玩具数据
 pages/panel/assets/home/       房间图层、人物、玩具图（可选）
 ```
 
-房间图**不随仓库分发**，避免版权和体积问题。自己放：
+仓库只带**占位图**，不带原来的房间/人物/玩具图，避免版权和体积问题。换成自己的：
 
 ```
 pages/panel/assets/home/
@@ -25,7 +25,7 @@ pages/panel/assets/home/
 {"name":"毛绒拼图","img":"assets/home/toys/whale.png"}
 ```
 
-没有图也能跑：`/home` 返回玩具列表和状态，只是不会显示图片。
+占位图只有色块和文字，能跑通房间 UI；换成自己的图后就是完整房间。
 
 ## API
 
@@ -44,6 +44,6 @@ POST /astrbot_plugin_memory_brain/page/home/toy/delete
 
 ## 限制
 
-- 公开仓库不带房间/人物/玩具图片
+- 公开仓库只带占位图，不带真实房间/人物/玩具图片
 - 玩具商品图有 IP 风险，不要上传
 - 本次没有做 qqbridge 适配，也没有对应测试环境

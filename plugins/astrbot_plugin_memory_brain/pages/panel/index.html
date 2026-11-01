@@ -38,6 +38,7 @@
   .canvas-box::before{content:"";position:absolute;inset:7px;pointer-events:none;
     border:1px solid rgba(0,229,255,.12);border-radius:3px}
   canvas{display:block;width:100%;height:100%;cursor:grab}
+  #brain3d-frame{position:absolute;inset:0;width:100%;height:100%;border:0;z-index:6;background:#04080f}
   canvas.dragging{cursor:grabbing}
   .hint{position:absolute;left:10px;bottom:8px;color:var(--muted);font-size:10px;pointer-events:none;opacity:.7}
   .legend{position:absolute;left:12px;top:10px;display:flex;gap:9px;color:var(--muted);font-size:10px;flex-wrap:wrap;pointer-events:none;
@@ -62,6 +63,84 @@
   .toast{position:fixed;right:14px;bottom:14px;background:var(--card);border:1px solid var(--line);
     padding:6px 12px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);opacity:0;transition:.2s;font-size:12px;pointer-events:none}
   .toast.show{opacity:1}
+
+  /* 房间 */
+  #homeView{position:absolute;inset:0;z-index:20;background:radial-gradient(circle at 50% 20%,#10283a,#050b12 70%);display:flex;gap:12px;padding:12px;box-sizing:border-box}
+  #homeView[hidden]{display:none}
+  .home-room{position:relative;flex:1;border:1px solid rgba(0,229,255,.18);border-radius:10px;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;background:url("assets/home/bg.png") center/cover no-repeat}
+  .home-room::before{content:"";position:absolute;inset:0;background:rgba(4,9,16,.82);backdrop-filter:blur(16px) saturate(.65)}
+  .room-stage{position:relative;z-index:2;width:100%;aspect-ratio:16/9;max-height:100%;
+    background:url("assets/home/bg.png") center/cover no-repeat;border-radius:8px;overflow:hidden}
+  .room-stage .character{position:absolute;left:50%;bottom:4%;height:46%;transform:translateX(-50%);
+    filter:drop-shadow(0 10px 18px rgba(20,10,30,.35));pointer-events:none;z-index:20}
+
+  .curtain-img{position:absolute;left:2.6%;top:1.2%;width:29%;height:auto;z-index:6;pointer-events:none;user-select:none;
+    filter:drop-shadow(0 4px 8px rgba(30,10,20,.18))}
+  .curtain-hit{position:absolute;left:1.8%;top:0.8%;width:31%;height:50%;z-index:7;cursor:pointer}
+  .curtain-hit:hover ~ .room-light{}
+
+  .lamp-glow{position:absolute;left:38%;top:2%;width:24%;height:40%;z-index:24;pointer-events:none;
+    background:radial-gradient(circle at 50% 16%,rgba(255,224,150,.50),rgba(255,196,90,.14) 42%,rgba(255,180,60,0) 70%);
+    opacity:0;transition:opacity .45s ease}
+  .room-stage.lamp-on .lamp-glow{opacity:1}
+  .room-stage.lamp-on img[data-spot="lamp"]{filter:drop-shadow(0 0 10px rgba(255,225,140,.95)) drop-shadow(0 0 26px rgba(255,190,60,.7))}
+  .room-stage.lamp-on .room-light{opacity:.16}
+
+  .room-light{position:absolute;inset:0;z-index:25;pointer-events:none;background:rgba(2,6,14,.62);
+    opacity:0;transition:opacity .6s ease}
+  .room-stage.night .room-light{opacity:1}
+  .room-stage.lights-off .room-light{opacity:1}
+  .room-stage.lights-off img.layer,
+  .room-stage.lights-off .character,
+  .room-stage.lights-off .curtain-img{filter:brightness(.62) saturate(.78)}
+  .room-stage.night.lamp-on .room-light{opacity:.16}
+  .room-stage.night.lamp-on .curtain ~ .room-light{opacity:.16}
+  .room-stage.night.lamp-on img[data-spot="lamp"]{filter:drop-shadow(0 0 10px rgba(255,220,120,.95)) drop-shadow(0 0 30px rgba(255,190,60,.75))}
+
+  .room-stage img.layer{position:absolute;z-index:5;pointer-events:auto;user-select:none;
+    transition:filter .18s ease,transform .18s ease;transform-origin:bottom center}
+  .room-stage img.layer[data-spot]:hover{filter:drop-shadow(0 0 5px rgba(255,214,110,.95)) drop-shadow(0 0 16px rgba(255,170,40,.55));cursor:pointer}
+  .room-stage img.layer[data-spot="toy"]:hover{filter:drop-shadow(0 0 5px rgba(120,235,255,.95)) drop-shadow(0 0 18px rgba(0,200,255,.6))}
+  .home-side{width:330px;display:flex;flex-direction:column;gap:8px;min-height:0}
+  .home-side .card{flex:1;min-height:0;display:flex;flex-direction:column}
+  .toy{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid rgba(0,229,255,.10);font-size:12px}
+  .toy .n{font-weight:600;color:#dffcff}
+  .toy .d{color:var(--muted);font-size:10px}
+  .toy .bar{width:56px;height:4px;border-radius:2px;background:rgba(255,255,255,.10);overflow:hidden}
+  .toy .bar i{display:block;height:100%;background:linear-gradient(90deg,#00e5ff,#9dff8f)}
+  #toyList{overflow:auto;flex:1}
+  .home-side input{width:100%;margin-top:5px}
+
+  #toyDetail{position:absolute;inset:0;z-index:30;background:rgba(3,8,14,.72);display:flex;align-items:center;justify-content:center}
+  #toyDetail[hidden]{display:none}
+  .toy-card{width:420px;max-width:92%;background:#0b1824;border:1px solid rgba(0,229,255,.28);border-radius:12px;padding:16px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .toy-card .pic{width:100%;height:200px;border-radius:10px;background:radial-gradient(circle at 50% 40%,#173247,#0a1622);
+    display:flex;align-items:center;justify-content:center;font-size:72px;overflow:hidden;margin-bottom:10px}
+  .toy-card .pic img{max-width:100%;max-height:100%;object-fit:contain}
+  .toy-card h2{margin:0 0 4px;font-size:16px}
+  .toy-card .meta{color:var(--muted);font-size:11px;margin-bottom:10px}
+  .toy-card .attr{display:flex;align-items:center;gap:8px;font-size:11px;margin:6px 0;color:#cfe9f5}
+  .toy-card .attr .bar{flex:1;height:5px;background:rgba(255,255,255,.10);border-radius:3px;overflow:hidden}
+  .toy-card .attr .bar i{display:block;height:100%;background:linear-gradient(90deg,#00e5ff,#9dff8f)}
+
+  .home-side .upload{display:block;margin-top:6px;padding:6px 8px;border:1px dashed rgba(0,229,255,.3);border-radius:6px;
+    color:#bfe9f7;font-size:11px;text-align:center;cursor:pointer}
+  .home-side .upload:hover{background:rgba(0,229,255,.08)}
+  #toyPreview{max-width:100%;max-height:90px;object-fit:contain;margin-top:6px;border-radius:6px;align-self:center}
+
+  #booksDetail{position:absolute;inset:0;z-index:30;background:rgba(3,8,14,.72);display:flex;align-items:center;justify-content:center}
+  #booksDetail[hidden]{display:none}
+  .book-row{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid rgba(0,229,255,.10);cursor:pointer}
+  .book-row:hover{background:rgba(0,229,255,.06)}
+  .book-spine{width:8px;height:34px;border-radius:2px;flex:0 0 auto}
+  .book-name{font-size:13px;font-weight:600;color:#e6fbff}
+  .book-meta{font-size:10px;color:var(--muted)}
+  .book-bar{flex:1;height:4px;background:rgba(255,255,255,.10);border-radius:2px;overflow:hidden}
+  .book-bar i{display:block;height:100%;background:linear-gradient(90deg,#ffd166,#ff9f43)}
+
+  button.danger{background:rgba(255,70,90,.12);border-color:rgba(255,90,110,.5);color:#ffb7c2}
+  button.danger:hover{background:rgba(255,70,90,.22)}
 </style>
 </head>
 <body>
@@ -74,6 +153,7 @@
     <button id="reload">重载</button>
     <button id="changes">变化</button>
     <button id="eval">评估</button>
+    <button id="home">家</button>
     <button id="reflect">反思</button>
     <button id="abstract">沉淀</button>
     <button id="sleep">睡觉</button>
@@ -86,6 +166,7 @@
   <div class="main">
     <div class="canvas-box">
       <canvas id="graph"></canvas>
+      <iframe id="brain3d-frame" src="about:blank" data-brain3d="1" title="3D 记忆脑" scrolling="no"></iframe>
       <div class="legend">
         <span><i class="dot" style="background:var(--core)"></i>核心</span>
         <span><i class="dot" style="background:var(--person)"></i>人物</span>
@@ -115,6 +196,73 @@
     </div>
   </div>
 </div>
+
+<div id="homeView" hidden>
+  <div class="home-room">
+    <div class="room-stage">
+      <img class="layer" data-spot="window" src="assets/home/layers/window.png" style="left:5.6%;top:9%;width:22.5%">
+      <img class="curtain-img" id="curtainImg" src="assets/home/curtain_closed_src.png" alt="">
+      <div class="curtain-hit" id="curtainHit"></div>
+      <img class="layer" data-spot="toy" src="assets/home/layers/toy_shelf.png" style="left:31.5%;bottom:34%;width:11.5%">
+      <img class="layer" data-spot="books" src="assets/home/layers/bookshelf.png" style="left:80.6%;bottom:31%;width:14%">
+      <img class="layer" src="assets/home/layers/rug.png" style="left:47.5%;bottom:4%;width:35%">
+      <img class="layer" data-spot="bed" src="assets/home/layers/bed.png" style="left:-2%;bottom:2%;width:34%">
+      <img class="layer" data-spot="desk" src="assets/home/layers/chair.png" style="left:68%;bottom:5%;width:12.5%">
+      <img class="layer" data-spot="desk" src="assets/home/layers/desk.png" style="left:75.6%;bottom:5%;width:24%">
+      <img class="layer" src="assets/home/layers/plant.png" style="left:91%;bottom:2%;width:9.5%">
+      <img class="layer" src="assets/home/layers/lamp.png" style="left:89.5%;bottom:35%;width:5.6%">
+      <img class="layer" data-spot="lamp" src="assets/home/layers/ceiling_light.png" style="left:47.5%;top:0;width:9.5%">
+      <div class="lamp-glow"></div>
+      <div class="room-light" id="roomLight"></div>
+      <img class="character" src="assets/home/character.png" alt="" />
+    </div>
+  </div>
+
+  <div class="home-side">
+    <div class="card">
+      <h2>房间 <button id="homeClose" style="float:right">关闭</button></h2>
+      <div id="homeStatus" class="empty">加载中…</div>
+    </div>
+    <div class="card">
+      <h2>玩具架</h2>
+      <div id="toyList"></div>
+      <input id="toyName" placeholder="新玩具的名字" />
+      <input id="toyDesc" placeholder="一句描述（可选）" />
+      <input id="toyFrom" placeholder="谁送的（可留空）" value="你" />
+      <label style="font-size:11px;color:#bfe9f7;margin-top:6px;display:flex;gap:6px;align-items:center">
+        <input type="checkbox" id="toySecret" style="width:auto;margin:0" /> 偷偷放，不告诉她是谁
+      </label>
+      <label class="upload">🖼 上传玩具图<input type="file" id="toyImg" accept="image/png,image/jpeg,image/webp" hidden></label>
+      <img id="toyPreview" hidden alt="" />
+      <button class="primary" id="giftToy" style="margin-top:5px">送给她</button>
+    </div>
+  </div>
+</div>
+
+
+<div id="toyDetail" hidden>
+  <div class="toy-card">
+    <div class="pic" id="tdPic">🧸</div>
+    <h2 id="tdName">玩具</h2>
+    <div class="meta" id="tdMeta"></div>
+    <div class="attr"><span>新鲜度</span><div class="bar"><i id="tdNov"></i></div></div>
+    <div class="attr"><span>耐玩度</span><div class="bar"><i id="tdDur"></i></div></div>
+    <div class="attr"><span>喜欢程度</span><div class="bar"><i id="tdLike"></i></div></div>
+    <p id="tdDesc" style="font-size:12px;color:#cfe9f5;margin:10px 0"></p>
+    <button id="toyDelete" class="danger" style="width:100%;margin-bottom:6px">删除这个玩具</button>
+    <button id="toyClose" style="width:100%">关上</button>
+  </div>
+</div>
+
+
+<div id="booksDetail" hidden>
+  <div class="toy-card" style="width:480px">
+    <h2 style="margin-bottom:8px">书架</h2>
+    <div id="bookList" style="max-height:420px;overflow:auto"></div>
+    <button id="booksClose" style="width:100%;margin-top:8px">关上</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -154,7 +302,16 @@
 
   async function call(path, body) {
     if (!view) throw new Error('页面桥未加载');
-    var res = body ? await view.apiPost(path, body) : await view.apiGet(path, {});
+    // AstrBot 4.29 的页面桥不允许 endpoint 里带 ?query；
+    // 原页面用了 page/entity?id=... / page/memories?limit=20，会被判 invalid。
+    var params = {};
+    var qpos = path.indexOf('?');
+    if (qpos >= 0) {
+      var qs = path.slice(qpos + 1);
+      path = path.slice(0, qpos);
+      new URLSearchParams(qs).forEach(function (v, k) { params[k] = v; });
+    }
+    var res = body ? await view.apiPost(path, body) : await view.apiGet(path, params);
     if (res && res.status === 'ok') return res.data;
     if (res && res.status === 'error') throw new Error(res.message || '请求失败');
     return res;
@@ -1082,6 +1239,211 @@
     box.appendChild(run);
   }
 
+
+  async function showHome() {
+    var main = document.querySelector('.main');
+    var view = document.getElementById('homeView');
+    main.style.display = 'none';
+    view.hidden = false;
+    try {
+      var d = await call('page/home');
+      renderHome(d);
+    } catch (e) { toast(e.message); }
+  }
+
+  function renderHome(d) {
+    var st = d.status || {};
+    var hour = new Date().getHours();
+    homeNight = (hour >= 19 || hour < 7);
+    homeSleeping = (st.action === 'nap' || st.action === 'rest');
+    // 她自己点灯：晚上 19:00–23:00 醒着就开；23:00 之后或午睡就关
+    homeLamp = !homeSleeping && hour >= 7 && hour < 23;
+    applyLight();
+    var names = { idle: '发呆', rest: '休息', reflect: '写日记', study: '看书学习', content: '想点子', qzone: '发说说', group: '在群里', phone: '刷手机', book: '读书', nap: '午睡', toy: '玩玩具' };
+    document.getElementById('homeStatus').textContent =
+      '现在：' + (names[st.action] || st.action || '发呆') + ' · 心情 ' + (st.mood || '平常') +
+      ' · 精力 ' + Math.round((st.energy || 0) * 100);
+    var box = document.getElementById('toyList');
+    box.innerHTML = '';
+    (d.toys || []).forEach(function (t) {
+      var row = document.createElement('div');
+      row.className = 'toy';
+      row.style.cursor = 'pointer';
+      row.onclick = (function (toy) { return function () { showToy(toy); }; })(t);
+      var left = document.createElement('div');
+      var n = document.createElement('div'); n.className = 'n'; n.textContent = t.name;
+      var de = document.createElement('div'); de.className = 'd'; de.textContent = (t.desc || '') + ' · ' + (t.secret && !t.discovered ? '匿名' : (t.from || ''));
+      left.appendChild(n); left.appendChild(de);
+      var bar = document.createElement('div'); bar.className = 'bar';
+      var fill = document.createElement('i');
+      fill.style.width = Math.max(0, Math.min(1, Number(t.novelty || 0))) * 100 + '%';
+      bar.appendChild(fill);
+      row.appendChild(left); row.appendChild(bar);
+      box.appendChild(row);
+    });
+    if (!(d.toys || []).length) box.innerHTML = '<div class="empty">玩具架是空的。</div>';
+  }
+
+
+
+  var TOY_ICON = { plush: '🧸', puzzle: '🧩', ball: '⚽', gift: '🎁' };
+  var TOY_TYPE = { plush: '毛绒', puzzle: '拼图', ball: '球', gift: '礼物' };
+  var currentToy = null, deleteArmed = false;
+  function showToy(t) {
+    currentToy = t; deleteArmed = false;
+    var del = document.getElementById('toyDelete');
+    if (del) del.textContent = '删除这个玩具';
+    var box = document.getElementById('toyDetail');
+    box.hidden = false;
+    document.getElementById('tdName').textContent = t.name || '玩具';
+    document.getElementById('tdMeta').textContent = (TOY_TYPE[t.type] || '玩具') + ' · ' + (t.rarity || '普通') + ' · ' + (t.secret && !t.discovered ? '匿名（还没发现）' : (t.from || ''));
+    var pic = document.getElementById('tdPic');
+    pic.innerHTML = '';
+    if (t.img) {
+      var im = document.createElement('img'); im.src = t.img; pic.appendChild(im);
+    } else {
+      pic.textContent = TOY_ICON[t.type] || '🧸';
+    }
+    document.getElementById('tdNov').style.width = Math.round((Number(t.novelty) || 0) * 100) + '%';
+    document.getElementById('tdDur').style.width = Math.round((Number(t.durability) || 0.7) * 100) + '%';
+    document.getElementById('tdLike').style.width = Math.round((Number(t.liking) || 0.6) * 100) + '%';
+    document.getElementById('tdDesc').textContent = t.desc || '还没写描述。';
+  }
+  document.getElementById('toyClose').onclick = function () { document.getElementById('toyDetail').hidden = true; };
+  document.getElementById('toyDelete').onclick = async function () {
+    if (!currentToy) return;
+    if (!deleteArmed) { deleteArmed = true; this.textContent = '再点一次确认删除'; return; }
+    try {
+      var r = await call('page/home/toy/delete', { id: currentToy.id });
+      document.getElementById('toyDetail').hidden = true;
+      renderHome(r.home || {});
+      toast('删掉了「' + (r.deleted || '') + '」');
+    } catch (e) { toast(e.message); }
+  };
+
+
+  var homeNight = false, homeLamp = false, homeSleeping = false;
+  function applyLight() {
+    var stage = document.querySelector('.room-stage');
+    if (!stage) return;
+    stage.classList.toggle('night', homeNight || homeSleeping);
+    stage.classList.toggle('lights-off', !homeLamp);
+    stage.classList.toggle('lamp-on', homeLamp);
+  }
+  var curtainEl = document.getElementById('curtainImg');
+  var curtainHit = document.getElementById('curtainHit');
+  var curtainOpen = false;
+  if (curtainHit && curtainEl) {
+    curtainHit.onclick = function (e) {
+      e.stopPropagation();
+      curtainOpen = !curtainOpen;
+      curtainEl.src = curtainOpen ? 'assets/home/curtain_open_src.png' : 'assets/home/curtain_closed_src.png';
+      document.getElementById('homeStatus').textContent = curtainOpen ? '窗帘拉开了，窗外是晚上。' : '窗帘拉上了。';
+    };
+    curtainHit.onmouseenter = function () { curtainEl.style.filter = 'drop-shadow(0 0 6px rgba(255,214,110,.8))'; };
+    curtainHit.onmouseleave = function () { curtainEl.style.filter = 'drop-shadow(0 4px 8px rgba(30,10,20,.18))'; };
+  }
+  var lampEl = document.querySelector('[data-spot="lamp"]');
+  if (lampEl) {
+    lampEl.onclick = function (e) {
+      e.stopPropagation();
+      homeLamp = !homeLamp;
+      applyLight();
+      document.getElementById('homeStatus').textContent = homeLamp ? '吊灯亮了，暖黄的光落下来。' : '吊灯关了。';
+    };
+  }
+
+
+  function bookColor(t) {
+    var h = 0; for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) % 360;
+    return 'hsl(' + h + ',55%,55%)';
+  }
+  async function showBooks() {
+    var box = document.getElementById('booksDetail');
+    box.hidden = false;
+    var list = document.getElementById('bookList');
+    list.innerHTML = '<div class="empty">翻书中…</div>';
+    try {
+      var d = await call('page/home/books');
+      list.innerHTML = '';
+      (d.books || []).forEach(function (b) {
+        var row = document.createElement('div'); row.className = 'book-row';
+        var sp = document.createElement('div'); sp.className = 'book-spine'; sp.style.background = bookColor(b.title);
+        var mid = document.createElement('div'); mid.style.flex = '1';
+        var n = document.createElement('div'); n.className = 'book-name'; n.textContent = b.title;
+        var m = document.createElement('div'); m.className = 'book-meta';
+        var pct = b.chars ? Math.min(100, Math.round(b.offset / b.chars * 100)) : 0;
+        m.textContent = b.current ? ('在读 · ' + (b.chapter || '') + ' · ' + pct + '%') : (Math.round(b.chars / 1000) + 'k 字');
+        mid.appendChild(n); mid.appendChild(m);
+        row.appendChild(sp); row.appendChild(mid);
+        if (b.current) {
+          var bar = document.createElement('div'); bar.className = 'book-bar';
+          var fill = document.createElement('i'); fill.style.width = pct + '%'; bar.appendChild(fill);
+          row.appendChild(bar);
+        }
+        list.appendChild(row);
+      });
+      if (!(d.books || []).length) list.innerHTML = '<div class="empty">书架上还没有书。</div>';
+    } catch (e) { list.innerHTML = '<div class="empty">' + e.message + '</div>'; }
+  }
+  document.getElementById('booksClose').onclick = function () { document.getElementById('booksDetail').hidden = true; };
+
+  document.querySelectorAll('.layer[data-spot]').forEach(function (h) {
+    if (h.getAttribute('data-spot') === 'lamp') return;
+    h.onclick = function () {
+      var spot = h.getAttribute('data-spot');
+      var st = document.getElementById('homeStatus');
+      if (spot === 'bed') st.textContent = '床：她困了会自己爬上去，睡醒会记一句梦。';
+      else if (spot === 'toy') {
+        st.textContent = '玩具架：点右边的玩具看详情，也可以送新的。';
+        var list = document.getElementById('toyList');
+        if (list) list.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } else if (spot === 'desk') st.textContent = '书桌：她在这里写东西、刷手机、发呆。';
+      else if (spot === 'books') { showBooks(); }
+    };
+  });
+
+
+  var toyImageData = '';
+  var toyImgInput = document.getElementById('toyImg');
+  if (toyImgInput) {
+    toyImgInput.onchange = function () {
+      var f = toyImgInput.files && toyImgInput.files[0];
+      if (!f) { toyImageData = ''; return; }
+      var r = new FileReader();
+      r.onload = function () {
+        toyImageData = String(r.result || '');
+        var pv = document.getElementById('toyPreview');
+        pv.src = toyImageData; pv.hidden = false;
+      };
+      r.readAsDataURL(f);
+    };
+  }
+
+  document.getElementById('home').onclick = showHome;
+  document.getElementById('homeClose').onclick = function () {
+    document.getElementById('homeView').hidden = true;
+    document.querySelector('.main').style.display = 'flex';
+  };
+  document.getElementById('giftToy').onclick = async function () {
+    var name = document.getElementById('toyName').value.trim();
+    if (!name) { toast('先给玩具起个名字'); return; }
+    try {
+      var r = await call('page/home/toy', { name: name, desc: document.getElementById('toyDesc').value.trim(),
+        from: document.getElementById('toyFrom').value.trim() || '你',
+        secret: document.getElementById('toySecret').checked,
+        image: toyImageData });
+      document.getElementById('toyName').value = '';
+      document.getElementById('toyDesc').value = '';
+      document.getElementById('toySecret').checked = false;
+      document.getElementById('toyPreview').hidden = true;
+      document.getElementById('toyPreview').src = '';
+      toyImageData = '';
+      renderHome(r.home || {});
+      toast(r.effect && r.effect.affinity ? ('放上玩具架了 · 好感 +' + r.effect.affinity) : '放上玩具架了');
+    } catch (e) { toast(e.message); }
+  };
+
   async function showEval() {
     try {
       var r = await Promise.all([call('page/eval'), call('page/eval/drafts')]);
@@ -1283,6 +1645,14 @@
   }
 
   boot();
+})();
+</script>
+<script>
+(function(){
+  var f = document.getElementById('brain3d-frame');
+  if (!f) return;
+  var host = location.hostname || '127.0.0.1';
+  f.src = 'http://' + host + ':8780/embed?v=10';
 })();
 </script>
 </body>
