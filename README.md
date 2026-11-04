@@ -24,6 +24,7 @@
 - [DSH 窗口](dsh/README.md)
 - [memory-core + DSH](memory-core/docs/dsh.md)
 - [房间与玩具](docs/room.md)
+- [房间素材准备清单](docs/room-assets.md)
 - [生图与生视频：自行配置 ComfyUI/API](docs/generation.md)
 
 ## 它解决什么

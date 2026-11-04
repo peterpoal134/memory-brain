@@ -20,7 +20,7 @@ DEFAULT = {
     "room": "助手的房间",
     "theme": "night",
     "toys": [
-        {"id": "toy_whale", "name": "毛绒拼图", "type": "plush", "desc": "蓝灰色的拼图，抱着睡刚好", "novelty": 0.82, "from": "主人", "added_at": 0, "rarity": "珍藏", "durability": 0.9, "liking": 0.95},
+        {"id": "toy_plush", "name": "毛绒玩偶", "type": "plush", "desc": "软软的毛绒玩偶，抱着睡刚好", "novelty": 0.82, "from": "主人", "added_at": 0, "rarity": "珍藏", "durability": 0.9, "liking": 0.95},
         {"id": "toy_puzzle", "name": "五百片拼图", "type": "puzzle", "desc": "海边小镇，拼到一半总被猫踩乱", "novelty": 0.65, "from": "主人", "added_at": 0, "rarity": "喜欢", "durability": 0.5, "liking": 0.75},
         {"id": "toy_ball", "name": "小皮球", "type": "ball", "desc": "拍起来会弹到床底下", "novelty": 0.55, "from": "自己", "added_at": 0, "rarity": "普通", "durability": 0.7, "liking": 0.6},
     ],

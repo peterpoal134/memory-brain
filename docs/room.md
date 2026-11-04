@@ -47,3 +47,8 @@ POST /astrbot_plugin_memory_brain/page/home/toy/delete
 - 公开仓库只带占位图，不带真实房间/人物/玩具图片
 - 玩具商品图有 IP 风险，不要上传
 - 本次没有做 qqbridge 适配，也没有对应测试环境
+
+
+## 素材准备
+
+房间背景、人物、家具图层、玩具/衣服/配饰图的完整清单见 [room-assets.md](room-assets.md)。
