@@ -252,8 +252,50 @@
     "default": 0.4
   },
   "owner_names": {
-    "description": "管理员/自己的称呼",
+    "description": "主人/自己的称呼",
     "hint": "逗号分隔。按时间回忆时只取这些人的原话；留空则不按称呼过滤。",
+    "type": "string",
+    "default": ""
+  },
+  "owner_id": {
+    "description": "主人 QQ 号",
+    "hint": "送玩具时给这个账号加好感、哄情绪；留空则只记录玩具。",
+    "type": "string",
+    "default": ""
+  },
+  "private_recall_group": {
+    "description": "主人私聊读群记忆",
+    "hint": "只对 owner_id 的私聊生效；开启后私聊可召回群聊记忆和最近群消息。",
+    "type": "bool",
+    "default": true
+  },
+  "group_recall_private": {
+    "description": "群聊读主人私聊",
+    "hint": "开启后群里可召回 private 记忆，并注入主人最近私聊原话。群里有外人时谨慎。",
+    "type": "bool",
+    "default": true
+  },
+  "auto_toy_image": {
+    "description": "自动发玩具图",
+    "hint": "明确提到玩具并说看看/找找时，跳过模型直接发图。",
+    "type": "bool",
+    "default": true
+  },
+  "auto_home_image": {
+    "description": "自动发房间图",
+    "hint": "明确说想看房间/本人时，直接发房间或人物图。",
+    "type": "bool",
+    "default": true
+  },
+  "comfy_url": {
+    "description": "ComfyUI 地址",
+    "hint": "SSH 隧道后填 http://127.0.0.1:8188；局域网直连填 Windows IP:8188。",
+    "type": "string",
+    "default": "http://127.0.0.1:8188"
+  },
+  "media_targets": {
+    "description": "跨会话发送名单",
+    "hint": "名字=QQ号，逗号分隔；用于把视频/语音私聊发给指定的人。",
     "type": "string",
     "default": ""
   }

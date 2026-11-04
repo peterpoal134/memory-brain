@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""房间与玩具库：生活层写，面板读，两边共用一个 JSON。"""
+"""助手的房间与玩具库：生活层写，面板读，两边共用一个 JSON。"""
 from __future__ import annotations
 
 import base64
@@ -13,13 +13,15 @@ PAGES = Path(__file__).resolve().parent / "pages" / "panel"
 PERSONA = Path(__file__).resolve().parents[4] / "AstrBot" / "data" / "plugin_data" / "astrbot_plugin_persona_state"
 ASSETS = PAGES / "assets" / "home"
 TOYS_DIR = ASSETS / "toys"
+CLOTHES_DIR = ASSETS / "clothes"
+ACCESSORIES_DIR = ASSETS / "accessories"
 
 DEFAULT = {
-    "room": "你的房间",
+    "room": "助手的房间",
     "theme": "night",
     "toys": [
-        {"id": "toy_puzzle", "name": "拼图", "type": "plush", "desc": "蓝灰色的拼图，抱着睡刚好", "novelty": 0.82, "from": "你", "added_at": 0, "rarity": "珍藏", "durability": 0.9, "liking": 0.95},
-        {"id": "toy_puzzle", "name": "五百片拼图", "type": "puzzle", "desc": "海边小镇，拼到一半总被猫踩乱", "novelty": 0.65, "from": "你", "added_at": 0, "rarity": "喜欢", "durability": 0.5, "liking": 0.75},
+        {"id": "toy_whale", "name": "毛绒拼图", "type": "plush", "desc": "蓝灰色的拼图，抱着睡刚好", "novelty": 0.82, "from": "主人", "added_at": 0, "rarity": "珍藏", "durability": 0.9, "liking": 0.95},
+        {"id": "toy_puzzle", "name": "五百片拼图", "type": "puzzle", "desc": "海边小镇，拼到一半总被猫踩乱", "novelty": 0.65, "from": "主人", "added_at": 0, "rarity": "喜欢", "durability": 0.5, "liking": 0.75},
         {"id": "toy_ball", "name": "小皮球", "type": "ball", "desc": "拍起来会弹到床底下", "novelty": 0.55, "from": "自己", "added_at": 0, "rarity": "普通", "durability": 0.7, "liking": 0.6},
     ],
 }
@@ -33,6 +35,10 @@ def _read() -> dict:
     except Exception:
         data = json.loads(json.dumps(DEFAULT))
     data.setdefault("toys", [])
+    data.setdefault("clothes", [])
+    data.setdefault("wearing", "")
+    data.setdefault("accessories", [])
+    data.setdefault("wearing_accessories", [])
     data.setdefault("room", DEFAULT["room"])
     data.setdefault("theme", "night")
     return data
@@ -112,6 +118,36 @@ def books() -> dict:
     return {"books": rows, "current": cur}
 
 
+def cloth_attrs(c: dict) -> dict:
+    text = str(c.get("name") or "") + " " + str(c.get("desc") or "")
+    if "连帽" in text or "卫衣" in text:
+        cat = "连帽衫"
+    elif "套装" in text:
+        cat = "套装"
+    elif "裙" in text:
+        cat = "裙子"
+    elif "衬衫" in text:
+        cat = "衬衫"
+    elif "外套" in text:
+        cat = "外套"
+    else:
+        cat = "衣服"
+    color = "其他"
+    for x in ("蓝", "粉", "白", "黑", "红", "黄", "绿", "紫", "灰", "格"):
+        if x in text:
+            color = x
+            break
+    style = "日常"
+    if any(x in text for x in ("纱", "蕾丝", "蝴蝶结", "碎花")):
+        style = "甜美"
+    elif any(x in text for x in ("毛绒", "连帽", "睡衣")):
+        style = "居家"
+    return {"category": cat, "color": color, "style": style,
+            "wear_count": int(c.get("wear_count") or 0),
+            "last_worn": float(c.get("last_worn") or 0),
+            "added_at": float(c.get("added_at") or 0)}
+
+
 def snapshot() -> dict:
     data = _read()
     state = {}
@@ -120,10 +156,24 @@ def snapshot() -> dict:
     except Exception:
         pass
     toys = sorted(data.get("toys", []), key=lambda t: float(t.get("novelty", 0)), reverse=True)
+    clothes = sorted(data.get("clothes", []), key=lambda c: float(c.get("added_at", 0)))
+    wid = str(data.get("wearing") or "")
+    wearing = next((dict(c) for c in clothes if str(c.get("id")) == wid), None)
+    for c in clothes:
+        c.update(cloth_attrs(c))
+    if wearing:
+        wearing.update(cloth_attrs(wearing))
+    accessories = sorted(data.get("accessories", []), key=lambda c: float(c.get("added_at", 0)))
+    acc_ids = {str(x) for x in (data.get("wearing_accessories") or [])}
+    worn_acc = [dict(c) for c in accessories if str(c.get("id")) in acc_ids]
     return {
         "room": data.get("room"),
         "theme": data.get("theme"),
         "toys": toys,
+        "clothes": clothes,
+        "wearing": wearing,
+        "accessories": accessories,
+        "wearing_accessories": worn_acc,
         "status": {
             "action": state.get("last_action") or "idle",
             "mood": state.get("mood") or "平常",
@@ -142,13 +192,285 @@ def save_image(data_url: str, toy_id: str) -> str:
         raw = base64.b64decode(b64, validate=False)
         if len(raw) > 4 * 1024 * 1024:
             return ""
-        mime = head[5:].split(";", 1)[0]
-        ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(mime, "png")
+        # 不管发来的是 jpg/webp，统一转成 PNG，透明通道也保留
+        import io
+        from PIL import Image as PILImage
+        im = PILImage.open(io.BytesIO(raw)).convert("RGBA")
         TOYS_DIR.mkdir(parents=True, exist_ok=True)
-        (TOYS_DIR / f"{toy_id}.{ext}").write_bytes(raw)
-        return f"assets/home/toys/{toy_id}.{ext}"
+        out = TOYS_DIR / f"{toy_id}.png"
+        im.save(out, "PNG")
+        return f"assets/home/toys/{toy_id}.png"
     except Exception:
         return ""
+
+
+def save_clothing_image(data_url: str, cloth_id: str) -> str:
+    """衣服图统一存 PNG，返回相对路径。"""
+    if not data_url.startswith("data:image/"):
+        return ""
+    try:
+        import io
+        from PIL import Image as PILImage
+        _head, b64 = data_url.split(",", 1)
+        raw = base64.b64decode(b64, validate=False)
+        if len(raw) > 6 * 1024 * 1024:
+            return ""
+        im = PILImage.open(io.BytesIO(raw)).convert("RGBA")
+        CLOTHES_DIR.mkdir(parents=True, exist_ok=True)
+        out = CLOTHES_DIR / f"{cloth_id}.png"
+        im.save(out, "PNG")
+        return f"assets/home/clothes/{cloth_id}.png"
+    except Exception:
+        return ""
+
+
+def find_clothing(name: str) -> dict | None:
+    q = (name or "").strip()
+    if not q:
+        return None
+    clothes = _read().get("clothes", [])
+    for c in clothes:
+        if str(c.get("name") or "") == q:
+            return c
+    for c in clothes:
+        if q in str(c.get("name") or "") or str(c.get("name") or "") in q:
+            return c
+    return None
+
+
+def find_clothing_in_text(text: str) -> dict | None:
+    text = str(text or "")
+    if not text:
+        return None
+    best = None
+    best_len = 1
+    for c in _read().get("clothes", []):
+        name = str(c.get("name") or "")
+        for size in range(min(8, len(name)), 1, -1):
+            for i in range(0, len(name) - size + 1):
+                frag = name[i:i + size]
+                if frag in text and size > best_len:
+                    best, best_len = c, size
+    return best
+
+
+def add_clothing(name: str, desc: str = "", from_: str = "主人", img: str = "",
+                 image_data: str = "") -> dict:
+    data = _read()
+    name = (name or "").strip()[:30]
+    if not name:
+        raise ValueError("衣服要有名字")
+    cid = "cloth_" + str(int(time.time() * 1000))
+    item = {
+        "id": cid, "name": name, "desc": (desc or "").strip()[:120],
+        "from": (from_ or "主人").strip()[:20], "added_at": time.time(), "img": (img or "").strip()[:200],
+    }
+    if not item["img"] and image_data:
+        item["img"] = save_clothing_image(image_data, cid)
+    data.setdefault("clothes", []).append(item)
+    _write(data)
+    return item
+
+
+def rename_clothing(new_name: str, cloth_id: str = "", old_name: str = "") -> dict | None:
+    new_name = (new_name or "").strip()[:30]
+    if not new_name:
+        raise ValueError("新名字不能为空")
+    data = _read()
+    hit = None
+    for c in data.get("clothes", []):
+        if cloth_id and str(c.get("id")) == str(cloth_id):
+            hit = c
+            break
+        if old_name and str(c.get("name") or "") == str(old_name).strip():
+            hit = c
+            break
+    if not hit:
+        return None
+    hit["name"] = new_name
+    _write(data)
+    return dict(hit)
+
+
+def wear_clothing(name: str = "", cloth_id: str = "") -> dict | None:
+    data = _read()
+    hit = None
+    for c in data.get("clothes", []):
+        if cloth_id and str(c.get("id")) == str(cloth_id):
+            hit = c
+            break
+        if name and (str(c.get("name") or "") == str(name).strip() or str(name).strip() in str(c.get("name") or "")):
+            hit = c
+            break
+    if not hit:
+        return None
+    data["wearing"] = str(hit.get("id") or "")
+    hit["wear_count"] = int(hit.get("wear_count") or 0) + 1
+    hit["last_worn"] = time.time()
+    _write(data)
+    return dict(hit)
+
+
+def wearing_clothing() -> dict | None:
+    data = _read()
+    wid = str(data.get("wearing") or "")
+    if not wid:
+        return None
+    for c in data.get("clothes", []):
+        if str(c.get("id")) == wid:
+            return dict(c)
+    return None
+
+
+def delete_clothing(cloth_id: str = "", name: str = "") -> dict | None:
+    data = _read()
+    hit = None
+    keep = []
+    for c in data.get("clothes", []):
+        if (cloth_id and str(c.get("id")) == str(cloth_id)) or (name and str(c.get("name") or "") == str(name).strip()):
+            hit = c
+            continue
+        keep.append(c)
+    if not hit:
+        return None
+    data["clothes"] = keep
+    if str(data.get("wearing") or "") == str(hit.get("id") or ""):
+        data["wearing"] = ""
+    _write(data)
+    img = str(hit.get("img") or "")
+    if img:
+        try:
+            f = PAGES / img
+            if f.exists() and CLOTHES_DIR in f.parents:
+                f.unlink()
+        except Exception:
+            pass
+    return dict(hit)
+
+
+def save_accessory_image(data_url: str, acc_id: str) -> str:
+    if not data_url.startswith("data:image/"):
+        return ""
+    try:
+        import io
+        from PIL import Image as PILImage
+        _head, b64 = data_url.split(",", 1)
+        raw = base64.b64decode(b64, validate=False)
+        if len(raw) > 6 * 1024 * 1024:
+            return ""
+        im = PILImage.open(io.BytesIO(raw)).convert("RGBA")
+        ACCESSORIES_DIR.mkdir(parents=True, exist_ok=True)
+        out = ACCESSORIES_DIR / f"{acc_id}.png"
+        im.save(out, "PNG")
+        return f"assets/home/accessories/{acc_id}.png"
+    except Exception:
+        return ""
+
+
+def find_accessory(name: str) -> dict | None:
+    q = (name or "").strip()
+    if not q:
+        return None
+    for c in _read().get("accessories", []):
+        if str(c.get("name") or "") == q or q in str(c.get("name") or "") or str(c.get("name") or "") in q:
+            return c
+    return None
+
+
+def find_accessory_in_text(text: str) -> dict | None:
+    text = str(text or "")
+    best = None
+    best_len = 1
+    for c in _read().get("accessories", []):
+        name = str(c.get("name") or "")
+        for size in range(min(8, len(name)), 1, -1):
+            for i in range(0, len(name) - size + 1):
+                frag = name[i:i + size]
+                if frag in text and size > best_len:
+                    best, best_len = c, size
+    return best
+
+
+def add_accessory(name: str, desc: str = "", from_: str = "主人", img: str = "",
+                  image_data: str = "") -> dict:
+    data = _read()
+    name = (name or "").strip()[:30]
+    if not name:
+        raise ValueError("配饰要有名字")
+    aid = "acc_" + str(int(time.time() * 1000))
+    item = {"id": aid, "name": name, "desc": (desc or "").strip()[:120],
+            "from": (from_ or "主人").strip()[:20], "added_at": time.time(), "img": (img or "").strip()[:200],
+            "wear_count": 0, "last_worn": 0.0}
+    if not item["img"] and image_data:
+        item["img"] = save_accessory_image(image_data, aid)
+    data.setdefault("accessories", []).append(item)
+    _write(data)
+    return item
+
+
+def wear_accessory(name: str = "", acc_id: str = "") -> dict | None:
+    data = _read()
+    hit = None
+    for c in data.get("accessories", []):
+        if acc_id and str(c.get("id")) == str(acc_id):
+            hit = c
+            break
+        if name and (str(c.get("name") or "") == str(name).strip() or str(name).strip() in str(c.get("name") or "")):
+            hit = c
+            break
+    if not hit:
+        return None
+    worn = [str(x) for x in (data.get("wearing_accessories") or [])]
+    if str(hit.get("id")) not in worn:
+        worn.append(str(hit.get("id")))
+    data["wearing_accessories"] = worn
+    _write(data)
+    return dict(hit)
+
+
+def wearing_accessories() -> list[dict]:
+    data = _read()
+    ids = {str(x) for x in (data.get("wearing_accessories") or [])}
+    return [dict(c) for c in data.get("accessories", []) if str(c.get("id")) in ids]
+
+
+def take_off_accessory(acc_id: str = "", name: str = "") -> dict | None:
+    data = _read()
+    hit = None
+    for c in data.get("accessories", []):
+        if (acc_id and str(c.get("id")) == str(acc_id)) or (name and str(c.get("name") or "") == str(name).strip()):
+            hit = c
+            break
+    if not hit:
+        return None
+    data["wearing_accessories"] = [x for x in (data.get("wearing_accessories") or []) if str(x) != str(hit.get("id"))]
+    _write(data)
+    return dict(hit)
+
+
+def delete_accessory(acc_id: str = "", name: str = "") -> dict | None:
+    data = _read()
+    hit = None
+    keep = []
+    for c in data.get("accessories", []):
+        if (acc_id and str(c.get("id")) == str(acc_id)) or (name and str(c.get("name") or "") == str(name).strip()):
+            hit = c
+            continue
+        keep.append(c)
+    if not hit:
+        return None
+    data["accessories"] = keep
+    data["wearing_accessories"] = [x for x in (data.get("wearing_accessories") or []) if str(x) != str(hit.get("id"))]
+    _write(data)
+    img = str(hit.get("img") or "")
+    if img:
+        try:
+            f = PAGES / img
+            if f.exists() and ACCESSORIES_DIR in f.parents:
+                f.unlink()
+        except Exception:
+            pass
+    return dict(hit)
 
 
 def find_toy(name: str) -> dict | None:
@@ -222,7 +544,11 @@ def add_toy(name: str, desc: str = "", from_: str = "主人", img: str = "", ima
     }
     if not toy.get("img") and image_data:
         toy["img"] = save_image(image_data, toy["id"])
-    data.setdefault("toys", []).append(toy)
+    data.setdefault("toys", [])
+    data.setdefault("clothes", [])
+    data.setdefault("wearing", "")
+    data.setdefault("accessories", [])
+    data.setdefault("wearing_accessories", []).append(toy)
     _write(data)
     return toy
 
@@ -263,9 +589,50 @@ def update_toy(toy_id: str, **fields) -> dict | None:
     return None
 
 
+def recover_novelty(data: dict, now: float | None = None) -> bool:
+    """长期没玩的玩具，新鲜度缓慢回一点，但不超过 0.8。"""
+    now = now or time.time()
+    changed = False
+    for toy in data.get("toys", []):
+        last = float(toy.get("last_played") or toy.get("added_at") or 0)
+        if last <= 0:
+            continue
+        days = (now - last) / 86400.0
+        if days < 0.5:
+            continue
+        old = float(toy.get("novelty") or 0)
+        new = min(0.8, old + 0.012 * days)
+        if new > old + 0.001:
+            toy["novelty"] = round(new, 3)
+            changed = True
+    return changed
+
+
+def rename_toy(toy_id: str = "", old_name: str = "", new_name: str = "") -> dict | None:
+    """按 id 或旧名字改玩具名。"""
+    new_name = (new_name or "").strip()[:30]
+    if not new_name:
+        raise ValueError("新名字不能为空")
+    data = _read()
+    hit = None
+    for t in data.get("toys", []):
+        if toy_id and str(t.get("id")) == str(toy_id):
+            hit = t
+            break
+        if old_name and str(t.get("name") or "") == str(old_name).strip():
+            hit = t
+            break
+    if not hit:
+        return None
+    hit["name"] = new_name
+    _write(data)
+    return dict(hit)
+
+
 def play_toy() -> dict | None:
     """生活层调用：挑一个最新鲜的玩具，新鲜度下降。"""
     data = _read()
+    recover_novelty(data)
     toys = data.get("toys", [])
     if not toys:
         return None

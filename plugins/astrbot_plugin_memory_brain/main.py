@@ -10,26 +10,21 @@
 """
 
 from __future__ import annotations
-# 路径都从 AstrBot 数据目录推导，不写死个人机器
-import os
-from pathlib import Path as _P
-
-_DATA = _P(__file__).resolve().parents[2]
-_LIFE_DIR = _P(os.environ.get("ASTRBOT_LIFE_DIR", str(_DATA.parent / "life")))
-
 
 import asyncio
 import base64
 import datetime
 import json
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Image, Plain
+from astrbot.core.message.components import Video
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.api.star import Context, Star, register
 
@@ -40,7 +35,7 @@ from . import (
 )
 from .report import build as build_report
 
-MOOD_FILE = (_DATA / "plugin_data/astrbot_plugin_persona_state/mood.json")
+MOOD_FILE = Path("/path/to/AstrBot/data/plugin_data/astrbot_plugin_persona_state/mood.json")
 from .engine import MemoryEngine, _cosine
 from .store import Store
 
@@ -51,6 +46,53 @@ VOICE_MARKER = "【对方这条语音说的是】"
 PROFILE_MARKER = "【对他们的印象】"
 WORKING_MARKER = "【还没做完的事】"
 STYLE_MARKER = "【最近的聊天习惯】"
+GIFT_MARKER = "【你最近发现的礼物】"
+TOY_MARKER = "【玩具图片】"
+RENAME_MARKER = "【玩具改名】"
+CLOSET_MARKER = "【你的衣柜】"
+HOME_MARKER = "【房间和样子】"
+GROUP_MARKER = "【群里最近说的话】"
+PRIVATE_MARKER = "【私聊最近说的话】"
+WEBCHAT_MARKER = "【QQ 那边最近说的话】"
+CHARACTER_LOOK = "你本人是蓝发蓝眼、蓝裙子、白色围裙，围裙上有一只小拼图，头上有一撮呆毛"
+LAYER_NAMES = {
+    "bed": "床", "desk": "书桌和电脑", "bookshelf": "书架", "chair": "椅子",
+    "rug": "地毯", "plant": "绿植", "window": "窗", "curtain": "窗帘",
+    "curtain_left": "窗帘", "curtain_right": "窗帘", "lamp": "台灯",
+    "ceiling_light": "吊灯", "toy_shelf": "玩具架",
+}
+
+
+def human_when(ts: float) -> str:
+    """把时间说成人话：今天/昨天/前天/前几天/上周/大概几月。"""
+    try:
+        ts = float(ts or 0)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    now = datetime.datetime.now()
+    then = datetime.datetime.fromtimestamp(ts)
+    days = (now.date() - then.date()).days
+    if days <= 0:
+        return "今天"
+    if days == 1:
+        return "昨天"
+    if days == 2:
+        return "前天"
+    if days == 3:
+        return "大前天"
+    if days <= 6:
+        return "前几天"
+    if days <= 13:
+        return "上周"
+    if days <= 29:
+        return "前几周"
+    if days <= 59:
+        return "上个月"
+    if days <= 364:
+        return f"大概{then.month}月"
+    return f"去年{then.month}月"
 
 # 攒够多少条消息写一段记忆
 BATCH_SIZE = 12
@@ -103,6 +145,11 @@ class MemoryBrainPlugin(Star):
             self.video_daily = 5
         self.voice_model = str(self.config.get("voice_model", "small") or "small")
         self._last_voice_id = ""
+        self._last_auto_toy: dict[str, tuple[str, float]] = {}
+        self._last_image: dict[str, tuple[float, str]] = {}
+        self._last_text: dict[str, tuple[float, str]] = {}
+        self._sent_toy = None
+        self._sent_home = None
         self._last_voice_block = ""
         self._last_hits: dict[str, list[int]] = {}
         self._correction_re = re.compile(
@@ -125,7 +172,13 @@ class MemoryBrainPlugin(Star):
             self.abstract_max = 5
         self.profile_enabled = bool(self.config.get("profile_enabled", True))
         self.inject_profile = bool(self.config.get("inject_profile", True))
+        self.inject_gift = bool(self.config.get("inject_gift", True))
+        self.auto_toy_image = bool(self.config.get("auto_toy_image", True))
+        self.auto_home_image = bool(self.config.get("auto_home_image", True))
         self.inject_speaker = bool(self.config.get("inject_speaker", True))
+        self.private_recall_group = bool(self.config.get("private_recall_group", True))
+        self.group_recall_private = bool(self.config.get("group_recall_private", True))
+        self.webchat_share_qq = bool(self.config.get("webchat_share_qq", True))
         self.profile_max = max(1, int(self.config.get("profile_max_per_run", 5) or 5))
         self.profile_min_degree = max(1, int(self.config.get("profile_min_degree", 2) or 2))
         try:
@@ -314,9 +367,16 @@ class MemoryBrainPlugin(Star):
     async def inject(self, event: AstrMessageEvent, req) -> None:
         try:
             self._strip_audio(req)
+            self._sent_toy = None
+            self._sent_home = None
+            self._cache_last_text(event)
+            self._cache_last_image(event)
+            await self._maybe_auto_toy(event)
+            await self._maybe_auto_home(event)
             self._maybe_correction(event)
             self._capture_raw(event)
             await self._maybe_intention(event)
+            await self._maybe_gift(event)
             self._capture_working(event)
             self._maybe_learn_skill(event)
             self._maybe_caption_images(event)
@@ -330,6 +390,15 @@ class MemoryBrainPlugin(Star):
                 memory_block = await self._memory_block(event)
                 if memory_block:
                     blocks.append(memory_block)
+            group_block = self._group_recent_block(event)
+            if group_block:
+                blocks.append(group_block)
+            private_block = self._private_recent_block(event)
+            if private_block:
+                blocks.append(private_block)
+            webchat_block = self._webchat_recent_block(event)
+            if webchat_block:
+                blocks.append(webchat_block)
             if self.inject_speaker:
                 speaker_block = self._speaker_block(event)
                 if speaker_block:
@@ -338,6 +407,26 @@ class MemoryBrainPlugin(Star):
                 profile_block = self._profile_block(event)
                 if profile_block:
                     blocks.append(profile_block)
+            if self.inject_gift:
+                gift_block = self._gift_block(event)
+                if gift_block:
+                    blocks.append(gift_block)
+            toy_hint = self._toy_hint(event)
+            if toy_hint:
+                blocks.append(toy_hint)
+            home_hint = self._home_hint(event)
+            if home_hint:
+                blocks.append(home_hint)
+            else:
+                home_knowledge = self._home_knowledge(event)
+                if home_knowledge:
+                    blocks.append(home_knowledge)
+            rename_hint = self._rename_hint(event)
+            if rename_hint:
+                blocks.append(rename_hint)
+            closet_hint = self._closet_hint(event)
+            if closet_hint:
+                blocks.append(closet_hint)
             style_block = self._style_block(event)
             if style_block:
                 blocks.append(style_block)
@@ -350,15 +439,26 @@ class MemoryBrainPlugin(Star):
                 return
 
             body = "\n\n".join(blocks)
-            base = req.system_prompt or ""
-            cuts = [base.find(m) for m in (
-                MARKER, SPEAKER_MARKER, PROFILE_MARKER, STYLE_MARKER, WORKING_MARKER,
-                VOICE_MARKER
-            )]
-            cuts = [c for c in cuts if c != -1]
-            if cuts:
-                base = base[: min(cuts)].rstrip()
-            req.system_prompt = (base + "\n\n" + body).strip()
+            # 动态记忆/画像/衣帽间放当前轮用户消息末尾，不写 system prompt。
+            # 内容、检索、权限与历史保存语义都不变。
+            from astrbot.core.agent.message import TextPart
+            parts = getattr(req, "extra_user_content_parts", None)
+            if parts is None:
+                parts = req.extra_user_content_parts = []
+            parts.append(TextPart(text=body).mark_as_temp())
+            try:
+                import hashlib
+                import os as _os
+                if _os.environ.get("ASTRBOT_CACHE_DEBUG") == "1":
+                    sys_text = str(getattr(req, "system_prompt", "") or "")
+                    extra_text = "\n".join(str(getattr(x, "text", "") or "") for x in parts)
+                    logger.info(
+                        "[cache-debug] system=%s/%d extra=%s/%d",
+                        hashlib.sha1(sys_text.encode("utf-8")).hexdigest()[:12], len(sys_text),
+                        hashlib.sha1(extra_text.encode("utf-8")).hexdigest()[:12], len(extra_text),
+                    )
+            except Exception:
+                pass
         except Exception:
             logger.exception("[brain] 注入失败")
 
@@ -409,23 +509,39 @@ class MemoryBrainPlugin(Star):
         key = self._session_key(event)
         recent = [m[1] for m in self._buffers.get(key, [])[-2:]]
         context = " ".join(r[:60] for r in recent if r and r != current).strip()
-        if current in self._GENERIC and not context:
+        short = re.sub(r"\[At:[^\]]+\]", "", current).strip()
+        if (not short or short in self._GENERIC
+                or re.fullmatch(r"[？?！!。…\s]+", short)
+                or (len(short) <= 3 and not context)):
             return ""
         query = (context + " " + current).strip()[:200]
 
-        vec = await self._embed(query)
+        # 向量召回最多等 1.2 秒；超时退回关键词，不拖住整轮回复。
+        try:
+            vec = await asyncio.wait_for(self._embed(query), timeout=1.2)
+        except Exception:
+            vec = None
         k = int(self.config.get("recall_k_group", 1) or 1) if is_group else self.k
         min_score = (
             float(self.config.get("recall_min_score_group", 0.45) or 0.45)
             if is_group else self.recall_min_score
         )
         asks_group = "群" in current
+        is_owner = (
+            str(event.get_sender_id()) == str(self.config.get("owner_id") or "")
+            or str(event.get_sender_name() or "") in owner_set
+        )
         if is_group:
             allow = {"public", "group"}
-        elif is_webchat and asks_group:
+            if self.group_recall_private:
+                allow.add("private")
+        elif is_webchat and (asks_group or self.webchat_share_qq):
             allow = {"public", "private", "group"}
         else:
             allow = {"public", "private"}
+            # 主人的私聊可以带出群里的记忆；其他人私聊仍然只看 private/public
+            if self.private_recall_group and is_owner:
+                allow.add("group")
         hits = self.engine.recall(
             query, k=k, query_vec=vec,
             rerank=bool(self.config.get("rerank", True)),
@@ -451,6 +567,9 @@ class MemoryBrainPlugin(Star):
                 raw_notes = [r for r in raw_all if not owner_set or r[1] in owner_set][:6]
             else:
                 raw_all = self.store.raw_between(start, end, limit=8, session_like="%FriendMessage%")
+                if self.private_recall_group and is_owner:
+                    raw_all += self.store.raw_between(start, end, limit=8, session_like="%GroupMessage%")
+                    raw_all.sort(key=lambda r: float(r[0] or 0), reverse=True)
                 raw_notes = [r for r in raw_all if not owner_set or r[1] in owner_set][:6]
             if extra:
                 seen = {int(h["id"]) for h in hits}
@@ -496,6 +615,132 @@ class MemoryBrainPlugin(Star):
         self.store.bump_daily("记忆注入")
         logger.info(f"[brain] 注入记忆 {len(hits)} 条（{len(block)} 字）")
         return block
+
+
+    def _cache_last_text(self, event: AstrMessageEvent) -> None:
+        try:
+            t = (event.get_message_str() or "").strip()
+            if t:
+                self._last_text[self._session_key(event)] = (time.time(), t)
+        except Exception:
+            pass
+
+    def _cache_last_image(self, event: AstrMessageEvent) -> None:
+        try:
+            comps = getattr(getattr(event, "message_obj", None), "message", None) or []
+            images = [c for c in comps if c.__class__.__name__ == "Image"]
+            if not images:
+                return
+            from . import multimodal
+            ref = multimodal.image_ref(images[0])
+            if ref:
+                self._last_image[self._session_key(event)] = (time.time(), ref)
+        except Exception:
+            pass
+
+    async def _maybe_gift(self, event: AstrMessageEvent) -> None:
+        """聊天里发图说“送你一个礼物”，直接收进玩具架。"""
+        try:
+            text = (event.get_message_str() or "").strip()
+            if not text:
+                hit = self._last_text.get(self._session_key(event))
+                if hit and time.time() - hit[0] <= 180:
+                    text = hit[1]
+            if not text or not re.search(r"礼物|送你|送她|给她|给你买|送给你|送给|收下|一套|这件|这套|挂上|挂起来|备着|收着|留着|给你穿|给你备|给你留|给助手|要吗|要嘛|(?:放|挂|塞|收).{0,4}(?:衣柜|衣橱)|(?:衣柜|衣橱).{0,4}(?:放|挂|塞|收)", text):
+                return
+            comps = getattr(getattr(event, "message_obj", None), "message", None) or []
+            images = [c for c in comps if c.__class__.__name__ == "Image"]
+            cached = None
+            if not images:
+                hit = self._last_image.get(self._session_key(event))
+                if hit and time.time() - hit[0] <= 900:
+                    cached = hit[1]
+            if not images and not cached:
+                return
+            import base64
+            import urllib.request
+            from . import home as home_mod
+            from . import multimodal
+
+            ref = multimodal.image_ref(images[0]) if images else str(cached or "")
+            data_url = ""
+            if ref.startswith("data:image/"):
+                data_url = ref
+            elif ref.startswith(("http://", "https://")):
+                with urllib.request.urlopen(ref, timeout=20) as r:
+                    raw = r.read()
+                    if len(raw) <= 4 * 1024 * 1024:
+                        data_url = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+            if not data_url:
+                return
+            m = re.search(r"(?:送|给)(?:你|我)?(?:一个|一只|个|只|份)?\s*([^，。！？!?\s]{1,12})", text)
+            name = (m.group(1) if m else "礼物").strip("的了吧呀啊") or "礼物"
+            if re.search(r"这套|这件|一套|这身", text):
+                m2 = re.search(r"(?:这套|这件|一套|这身)([^，。！？!?\s]{0,14})", text)
+                cand = (m2.group(1) if m2 else "").strip("的了吧呀啊")
+                cand = cand.replace("的衣服", "").rstrip("的")
+                if cand and not re.search(r"衣柜|衣橱|挂|放|塞", cand):
+                    name = cand[:30]
+                if not name or name in ("礼物", "衣服", "的"):
+                    name = "这套衣服"
+            sender = (event.get_sender_name() or "主人").strip()
+            secret = bool(re.search(r"偷偷|匿名|别告诉她|不告诉她", text))
+            who = re.search(r"([\u4e00-\u9fa5]{1,4})(?:送的|送你的|托我|让我送)", text)
+            from_name = who.group(1) if who and who.group(1) not in ("我", "你") else sender
+            is_acc = bool(re.search(r"眼镜|墨镜|帽子|发饰|发夹|耳环|项链|手链|戒指|围巾|手套|头饰|胸针|腰带|配饰|鞋|袜子|饰品", text))
+            is_cloth = bool(re.search(r"衣服|裙子|外套|上衣|裤子|睡衣|装扮|换上|穿上|衣柜|衣橱|挂上|挂起来|备着|收着|留着|给你穿|给你备|给你留|要吗|要嘛", text))
+            if is_acc:
+                acc = home_mod.add_accessory(name, desc="聊天里送的配饰", from_=from_name,
+                                             image_data=data_url)
+                effect = home_mod.gift_effect(str(self.config.get("owner_id") or "") if str(event.get_sender_id()) == str(self.config.get("owner_id") or "") else "")
+                try:
+                    mem = f"{from_name}送了一件配饰：{name}。"
+                    vec = await self._embed(mem)
+                    self.engine.remember(mem, kind="fact", importance=0.72, source="home",
+                                         visibility="private", meta={"accessory": name}, vector=vec)
+                except Exception:
+                    pass
+                extra = f"，好感 +{effect.get('affinity')}" if effect.get("affinity") else ""
+                await event.send(MessageChain([Plain(f"收到啦，{name}我放配饰盒里了{extra}")]))
+                event.stop_event()
+                return
+            if is_cloth and name in ("礼物", "衣服", "挂上", "挂起来", "备着", "收着", "留着", "要吗", "要嘛", "这个", "这套", "这件"):
+                name = "这套衣服"
+            if is_cloth:
+                base = name
+                n = 2
+                while home_mod.find_clothing(name):
+                    name = f"{base}{n}"
+                    n += 1
+                cloth = home_mod.add_clothing(name, desc="聊天里送的衣服", from_=from_name,
+                                              image_data=data_url)
+                effect = home_mod.gift_effect(str(self.config.get("owner_id") or "") if str(event.get_sender_id()) == str(self.config.get("owner_id") or "") else "")
+                try:
+                    mem = f"{from_name}送了一件衣服：{name}。"
+                    vec = await self._embed(mem)
+                    self.engine.remember(mem, kind="fact", importance=0.72, source="home",
+                                         visibility="private", meta={"cloth": name}, vector=vec)
+                except Exception:
+                    pass
+                extra = f"，好感 +{effect.get('affinity')}" if effect.get("affinity") else ""
+                await event.send(MessageChain([Plain(f"收到啦，{name}我挂衣柜里了{extra}")]))
+                event.stop_event()
+                return
+            toy = home_mod.add_toy(name, desc="聊天里送的礼物", from_=from_name,
+                                   image_data=data_url, secret=secret)
+            effect = home_mod.gift_effect(str(self.config.get("owner_id") or "") if str(event.get_sender_id()) == str(self.config.get("owner_id") or "") else "")
+            memory = f"{from_name}送了一个玩具：{name}。" + ("（偷偷放的，她还不知道是谁）" if secret else "")
+            try:
+                vec = await self._embed(memory)
+                self.engine.remember(memory, kind="fact", importance=0.7, source="home",
+                                     visibility="private", meta={"toy": name}, vector=vec)
+            except Exception:
+                pass
+            extra = f"，好感 +{effect.get('affinity')}" if effect.get("affinity") else ""
+            await event.send(MessageChain([Plain(f"收到啦，{name}我放玩具架上了{extra}")]))
+            event.stop_event()
+        except Exception:
+            logger.debug("[brain] 聊天送礼失败", exc_info=True)
 
     async def _maybe_intention(self, event: AstrMessageEvent) -> None:
         """识别“明天三点提醒我”这类话，存成带到期时间的提醒。"""
@@ -577,6 +822,396 @@ class MemoryBrainPlugin(Star):
             )
         except Exception:
             logger.debug("[brain] 原始消息采集失败", exc_info=True)
+
+
+    @filter.llm_tool(name="send_toy_picture")
+    async def send_toy_picture(self, event: AstrMessageEvent, name: str = "") -> str:
+        """把玩具架上某个玩具的图片发到当前聊天。对方想看玩具长什么样、或提到某个玩具时调用。"""
+        from . import home as home_mod
+
+        try:
+            toy = home_mod.find_toy(name)
+            if not toy:
+                toy = home_mod.find_toy_in_text(event.get_message_str() or "")
+            if not toy:
+                # 模型空参数：先看最近聊天里有没有提到玩具
+                toy = self._context_toy(event)
+            if not toy:
+                # 再退到最新有图的玩具，别直接说没有
+                toys = [t for t in home_mod.snapshot().get("toys", []) if t.get("img")]
+                if toys:
+                    toy = max(toys, key=lambda t: float(t.get("added_at") or 0))
+            if not toy:
+                return "玩具架上没有这个玩具"
+            img = str(toy.get("img") or "")
+            if not img:
+                return f"{toy.get('name')}还没有图片"
+            path = home_mod.PAGES / img
+            if not path.exists():
+                return "玩具图片文件不在了"
+            await event.send(MessageChain([Image.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "image", path, f"玩具「{toy.get('name')}」")
+            return f"已把{toy.get('name')}的图片发出去"
+        except Exception as exc:
+            logger.debug("[brain] 发送玩具图失败", exc_info=True)
+            return f"发送失败：{exc}"
+
+    @filter.llm_tool(name="send_home_picture")
+    async def send_home_picture(self, event: AstrMessageEvent, kind: str = "") -> str:
+        """把她的房间或她本人的图片发到当前聊天。对方想看房间、你长什么样、自拍时调用；kind 传 room 或 character。"""
+        from . import home as home_mod
+
+        try:
+            k = str(kind or "").lower()
+            text = event.get_message_str() or ""
+            if k not in ("room", "character"):
+                k = "room" if re.search(r"房间|屋里", text) else "character"
+            path = home_mod.PAGES / ("assets/home/room_base.jpg" if k == "room" else "assets/home/character.png")
+            if not path.exists():
+                return "图片文件不在了"
+            await event.send(MessageChain([Image.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "image", path, "房间" if k == "room" else "她的样子")
+            return "已把房间图片发出去" if k == "room" else "已把你的样子发出去"
+        except Exception as exc:
+            logger.debug("[brain] 发送房间图失败", exc_info=True)
+            return f"发送失败：{exc}"
+
+    @filter.llm_tool(name="send_toy_selfie")
+    async def send_toy_selfie(self, event: AstrMessageEvent, name: str = "") -> str:
+        """把她的形象和某个玩具合成一张照片。对方说想看你背着、抱着、拿着某个玩具，或和玩具合照时调用。"""
+        from . import home as home_mod
+        from PIL import Image as PILImage
+
+        try:
+            toy = home_mod.find_toy(name) or home_mod.find_toy_in_text(event.get_message_str() or "")
+            if not toy:
+                return "玩具架上没有这个玩具"
+            img = str(toy.get("img") or "")
+            if not img:
+                return f"{toy.get('name')}还没有图片"
+            toy_path = home_mod.PAGES / img
+            char_path = home_mod.PAGES / "assets/home/character.png"
+            room_path = home_mod.PAGES / "assets/home/room_base.jpg"
+            if not toy_path.exists() or not char_path.exists():
+                return "图片文件不在了"
+            char = PILImage.open(char_path).convert("RGBA")
+            toy_img = PILImage.open(toy_path).convert("RGBA")
+            if room_path.exists():
+                canvas = PILImage.open(room_path).convert("RGBA")
+            else:
+                canvas = PILImage.new("RGBA", (900, 1200), (245, 245, 245, 255))
+            h = min(800, canvas.height - 60)
+            char = char.resize((int(char.width * h / char.height), h), PILImage.LANCZOS)
+            canvas.alpha_composite(char, ((canvas.width - char.width) // 2, canvas.height - h))
+            tw = 190
+            toy_img = toy_img.resize((tw, int(toy_img.height * tw / toy_img.width)), PILImage.LANCZOS)
+            canvas.alpha_composite(toy_img, ((canvas.width - tw) // 2 + 10, canvas.height - toy_img.height - 120))
+            out = Path(tempfile.gettempdir()) / f"assistant-selfie-{int(time.time())}.jpg"
+            canvas.convert("RGB").save(out, quality=92)
+            await event.send(MessageChain([Image.fromFileSystem(str(out))]))
+            self._remember_bot_media(event, "image", out, f"抱着玩具「{toy.get('name')}」的合照")
+            return f"已把{toy.get('name')}和她的合照发出去"
+        except Exception as exc:
+            logger.debug("[brain] 合成玩具合照失败", exc_info=True)
+            return f"合成失败：{exc}"
+
+    @filter.llm_tool(name="draw_picture")
+    async def draw_picture(self, event: AstrMessageEvent, prompt: str, size: str = "standard") -> str:
+        """把 prompt 画成一张图发给对方。size 默认 standard（512），要高清传 hd（1024）。"""
+        try:
+            from .imagegen import generate
+
+            base = str(self.config.get("comfy_url") or "http://127.0.0.1:8188")
+            path = await asyncio.to_thread(generate, prompt, size, base)
+            await event.send(MessageChain([Image.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "image", path, prompt)
+            return "画好了，已经发出去"
+        except Exception as exc:
+            logger.debug("[brain] 生图失败", exc_info=True)
+            return f"画图失败：{exc}"
+
+    @filter.llm_tool(name="draw_video")
+    async def draw_video(self, event: AstrMessageEvent, prompt: str, seconds: int = 5) -> str:
+        """把 prompt 画成一段 5 秒左右的视频发给对方，默认 608x352、带音频。"""
+        try:
+            from .videogen import generate
+
+            base = str(self.config.get("comfy_url") or "http://127.0.0.1:8188")
+            path = await asyncio.to_thread(generate, prompt, seconds, base)
+            await event.send(MessageChain([Video.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "video", path, prompt)
+            return "视频做好了，已经发出去"
+        except Exception as exc:
+            logger.debug("[brain] 生视频失败", exc_info=True)
+            return f"生视频失败：{exc}"
+
+    @filter.llm_tool(name="rename_clothing")
+    async def rename_clothing(self, event: AstrMessageEvent, old_name: str, new_name: str) -> str:
+        """给衣柜里的衣服改名字。old_name 是现在的名字，new_name 是新名字。"""
+        try:
+            from . import home as home_mod
+            hit = home_mod.rename_clothing(new_name, old_name=old_name)
+            if not hit:
+                return "衣柜里没有这件衣服"
+            return f"改好了，现在叫「{hit.get('name')}」"
+        except Exception as exc:
+            logger.debug("[brain] 衣服改名失败", exc_info=True)
+            return f"改名失败：{exc}"
+
+    def _pick_clothing(self, event: AstrMessageEvent, name: str = "") -> dict | None:
+        from . import home as home_mod
+
+        text = event.get_message_str() or ""
+        item = home_mod.find_clothing(name) or home_mod.find_clothing_in_text(text)
+        if item:
+            return item
+        clothes = home_mod.snapshot().get("clothes") or []
+        if len(clothes) == 1:
+            return clothes[0]
+        if re.search(r"那套|这套|新衣服|衣服|换上|快换", text) and clothes:
+            return max(clothes, key=lambda c: float(c.get("added_at") or 0))
+        return None
+
+    @filter.llm_tool(name="wear_clothing")
+    async def wear_clothing(self, event: AstrMessageEvent, name: str = "") -> str:
+        """从衣柜里换上一件衣服。name 可以只给前几个字，比如“蓝格子”。"""
+        try:
+            from . import home as home_mod
+
+            item = self._pick_clothing(event, name)
+            if not item:
+                return "衣柜里没有这件衣服"
+            hit = home_mod.wear_clothing(cloth_id=str(item.get("id") or ""))
+            if not hit:
+                return "换衣服失败"
+            return f"换上了「{hit.get('name')}」"
+        except Exception as exc:
+            logger.debug("[brain] 换衣服失败", exc_info=True)
+            return f"换衣服失败：{exc}"
+
+    @filter.llm_tool(name="try_on")
+    async def try_on(self, event: AstrMessageEvent, cloth_name: str = "", prompt: str = "在房间里自然站着，微笑") -> str:
+        """先换上指定衣服，再生成一张照片。cloth_name 可以只给前几个字。"""
+        try:
+            from . import home as home_mod
+            item = self._pick_clothing(event, cloth_name)
+            if not item:
+                return "衣柜里没有这件衣服"
+            home_mod.wear_clothing(cloth_id=str(item.get("id") or ""))
+            await self.draw_self_room(event, prompt)
+            return f"换上「{item.get('name')}」并拍好了"
+        except Exception as exc:
+            logger.debug("[brain] 换装拍照失败", exc_info=True)
+            return f"换装拍照失败：{exc}"
+
+    @filter.llm_tool(name="wear_accessory")
+    async def wear_accessory(self, event: AstrMessageEvent, name: str) -> str:
+        """从配饰盒里戴上一件配饰。name 是配饰名。"""
+        try:
+            from . import home as home_mod
+
+            item = home_mod.find_accessory(name) or home_mod.find_accessory_in_text(event.get_message_str() or "")
+            if not item:
+                return "配饰盒里没有这件"
+            hit = home_mod.wear_accessory(acc_id=str(item.get("id") or ""))
+            if not hit:
+                return "佩戴失败"
+            return f"戴上了「{hit.get('name')}」"
+        except Exception as exc:
+            logger.debug("[brain] 戴配饰失败", exc_info=True)
+            return f"戴配饰失败：{exc}"
+
+    @filter.llm_tool(name="take_off_accessory")
+    async def take_off_accessory(self, event: AstrMessageEvent, name: str) -> str:
+        """摘下某件配饰。name 是配饰名。"""
+        try:
+            from . import home as home_mod
+
+            item = home_mod.find_accessory(name) or home_mod.find_accessory_in_text(event.get_message_str() or "")
+            if not item:
+                return "配饰盒里没有这件"
+            hit = home_mod.take_off_accessory(acc_id=str(item.get("id") or ""))
+            if not hit:
+                return "摘配饰失败"
+            return f"摘下了「{hit.get('name')}」"
+        except Exception as exc:
+            logger.debug("[brain] 摘配饰失败", exc_info=True)
+            return f"摘配饰失败：{exc}"
+
+    @filter.llm_tool(name="rename_toy")
+    async def rename_toy(self, event: AstrMessageEvent, old_name: str, new_name: str) -> str:
+        """把玩具架上某个玩具改名字。old_name 是现在的名字，new_name 是新名字。"""
+        try:
+            from . import home as home_mod
+
+            toy = home_mod.find_toy(old_name)
+            if not toy:
+                return "玩具架上没有这个玩具"
+            hit = home_mod.rename_toy(toy_id=str(toy.get("id") or ""), new_name=new_name)
+            if not hit:
+                return "改名失败"
+            return f"改好了，现在叫「{hit.get('name')}」"
+        except Exception as exc:
+            logger.debug("[brain] 玩具改名失败", exc_info=True)
+            return f"改名失败：{exc}"
+
+    @filter.llm_tool(name="send_video_to")
+    async def send_video_to(self, event: AstrMessageEvent, target: str, prompt: str, seconds: int = 5) -> str:
+        """生成一段视频并私聊发给指定的人，例如朋友。target 填名字。"""
+        try:
+            from .media_send import send_private, targets
+            from .videogen import generate
+
+            uid = targets(str(self.config.get("media_targets") or "")).get(str(target or "").strip())
+            if not uid:
+                return f"没有找到 {target} 的私聊 ID"
+            base = str(self.config.get("comfy_url") or "http://127.0.0.1:8188")
+            path = await asyncio.to_thread(generate, prompt, seconds, base)
+            ok = await asyncio.to_thread(send_private, uid, str(path), "video")
+            return "视频已经私聊发过去了" if ok else "视频生成了，但发送失败"
+        except Exception as exc:
+            logger.debug("[brain] 私聊发视频失败", exc_info=True)
+            return f"发视频失败：{exc}"
+
+    @filter.llm_tool(name="send_voice_to")
+    async def send_voice_to(self, event: AstrMessageEvent, target: str, text: str) -> str:
+        """用本地 TTS 生成语音并私聊发给指定的人，例如朋友。target 填名字。"""
+        try:
+            import subprocess, tempfile, os
+            from .media_send import send_private, targets
+
+            uid = targets(str(self.config.get("media_targets") or "")).get(str(target or "").strip())
+            if not uid:
+                return f"没有找到 {target} 的私聊 ID"
+            exe = os.environ.get("ASSISTANT_VOICE", "/path/to/bin/assistant-voice")
+            out = tempfile.mktemp(suffix=".wav")
+            p = await asyncio.to_thread(subprocess.run, [exe, "--out", out, text], capture_output=True, text=True, timeout=120)
+            if p.returncode != 0:
+                return f"语音生成失败：{p.stderr.strip()[:120]}"
+            ok = await asyncio.to_thread(send_private, uid, out, "voice")
+            return "语音已经私聊发过去了" if ok else "语音生成了，但发送失败"
+        except Exception as exc:
+            logger.debug("[brain] 私聊发语音失败", exc_info=True)
+            return f"发语音失败：{exc}"
+
+    @filter.llm_tool(name="draw_self_room")
+    async def draw_self_room(self, event: AstrMessageEvent, prompt: str = "自然待在房间里") -> str:
+        """用参考图和房间背景生成她在房间里的照片，可以指定姿势/场景。"""
+        try:
+            from . import home as home_mod
+            from .imagegen import generate_self
+
+            char = home_mod.PAGES / "assets/home/character_video_ref.png"
+            if not Path(char).exists():
+                char = home_mod.PAGES / "assets/home/character.png"
+            room = home_mod.PAGES / "assets/home/room_base.jpg"
+            extras = []
+            toy = home_mod.find_toy_in_text(prompt)
+            if toy and toy.get("img") and Path(home_mod.PAGES / str(toy["img"])).exists():
+                extras.append(str(home_mod.PAGES / str(toy["img"])))
+            wearing = home_mod.wearing_clothing()
+            outfit = ""
+            if wearing:
+                prompt += f" She is wearing the outfit「{wearing.get('name')}」."
+                if wearing.get("img") and Path(home_mod.PAGES / str(wearing["img"])).exists():
+                    outfit = str(home_mod.PAGES / str(wearing["img"]))
+            accs = [str(home_mod.PAGES / str(a["img"])) for a in home_mod.wearing_accessories()
+                    if a.get("img") and Path(home_mod.PAGES / str(a["img"])).exists()]
+            base = str(self.config.get("comfy_url") or "http://127.0.0.1:8188")
+            path = await asyncio.to_thread(generate_self, prompt, "standard", base, str(char), str(room), extras, outfit, accs)
+            await event.send(MessageChain([Image.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "image", path, f"在房间：{prompt}")
+            return "房间照片做好了"
+        except Exception as exc:
+            logger.debug("[brain] 房间合成失败", exc_info=True)
+            return f"房间合成失败：{exc}"
+
+    @filter.llm_tool(name="draw_self")
+    async def draw_self(self, event: AstrMessageEvent, prompt: str, size: str = "standard") -> str:
+        """用她自己的参考图生图，保持助手的形象。默认 512，高清传 hd。"""
+        try:
+            from . import home as home_mod
+            from .imagegen import generate_self
+
+            ref = str(home_mod.PAGES / "assets/home/character.png")
+            extras = []
+            toy = home_mod.find_toy_in_text(prompt)
+            if toy and toy.get("img") and Path(home_mod.PAGES / str(toy["img"])).exists():
+                extras.append(str(home_mod.PAGES / str(toy["img"])))
+            wearing = home_mod.wearing_clothing()
+            outfit = ""
+            if wearing:
+                prompt += f" She is wearing the outfit「{wearing.get('name')}」."
+                if wearing.get("img") and Path(home_mod.PAGES / str(wearing["img"])).exists():
+                    outfit = str(home_mod.PAGES / str(wearing["img"]))
+            accs = [str(home_mod.PAGES / str(a["img"])) for a in home_mod.wearing_accessories()
+                    if a.get("img") and Path(home_mod.PAGES / str(a["img"])).exists()]
+            base = str(self.config.get("comfy_url") or "http://127.0.0.1:8188")
+            path = await asyncio.to_thread(generate_self, prompt, size, base, ref, "", extras, outfit, accs)
+            await event.send(MessageChain([Image.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "image", path, prompt)
+            return "画好了，是她自己的样子"
+        except Exception as exc:
+            logger.debug("[brain] 参考图生图失败", exc_info=True)
+            return f"画图失败：{exc}"
+
+    @filter.llm_tool(name="draw_self_video")
+    async def draw_self_video(self, event: AstrMessageEvent, prompt: str, seconds: int = 5) -> str:
+        """用她自己的参考图生 5 秒视频，保持助手的形象。"""
+        try:
+            from . import home as home_mod
+            from .videogen import generate_self as generate_self_video
+
+            from .imagegen import generate_self as generate_room_frame
+
+            char = home_mod.PAGES / "assets/home/character_video_ref.png"
+            if not Path(char).exists():
+                char = home_mod.PAGES / "assets/home/character.png"
+            room = home_mod.PAGES / "assets/home/room_base.jpg"
+            base = str(self.config.get("comfy_url") or "http://127.0.0.1:8188")
+            if Path(room).exists():
+                extras = []
+                toy = home_mod.find_toy_in_text(prompt)
+                if toy and toy.get("img") and Path(home_mod.PAGES / str(toy["img"])).exists():
+                    extras.append(str(home_mod.PAGES / str(toy["img"])))
+                wearing = home_mod.wearing_clothing()
+                outfit = ""
+                if wearing:
+                    prompt += f" She is wearing the outfit「{wearing.get('name')}」."
+                    if wearing.get("img") and Path(home_mod.PAGES / str(wearing["img"])).exists():
+                        outfit = str(home_mod.PAGES / str(wearing["img"]))
+                accs = [str(home_mod.PAGES / str(a["img"])) for a in home_mod.wearing_accessories()
+                        if a.get("img") and Path(home_mod.PAGES / str(a["img"])).exists()]
+                frame = await asyncio.to_thread(generate_room_frame, prompt, "standard", base, str(char), str(room), extras, outfit, accs)
+                ref = str(frame)
+            else:
+                ref = str(char)
+            path = await asyncio.to_thread(generate_self_video, prompt, seconds, base, ref)
+            await event.send(MessageChain([Video.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "video", path, prompt)
+            return "视频做好了，是她自己的样子"
+        except Exception as exc:
+            logger.debug("[brain] 参考图生视频失败", exc_info=True)
+            return f"生视频失败：{exc}"
+
+    def _remember_bot_media(self, event: AstrMessageEvent, kind: str, path, note: str = "") -> None:
+        """把她自己发出去的图片/视频记进上下文，避免下一轮不认账。"""
+        try:
+            names = {"image": "图片", "video": "视频", "voice": "语音", "sticker": "表情"}
+            label = names.get(kind, kind)
+            fname = Path(str(path)).name if path else ""
+            text = f"我刚发了一张{label}" + (f"：{note}" if note else "") + (f"（文件 {fname}）" if fname else "")
+            self.store.add_raw(
+                self._session_key(event), "bot", text, "bot",
+                keep=int(self.config.get("raw_keep", 2000) or 2000),
+            )
+            try:
+                self.engine.remember(text, kind="episode", importance=0.32, source="self_media",
+                                     visibility="private", meta={"media": kind, "file": fname})
+            except Exception:
+                pass
+        except Exception:
+            logger.debug("[brain] 发送媒体记忆失败", exc_info=True)
 
     @filter.on_llm_response()
     async def capture_reply(self, event: AstrMessageEvent, resp) -> None:
@@ -978,7 +1613,7 @@ class MemoryBrainPlugin(Star):
         try:
             vec = None
             self.engine.remember(
-                f"管理员纠正过我：{text[:60]}",
+                f"主人纠正过我：{text[:60]}",
                 kind="fact",
                 importance=0.7,
                 source="correction",
@@ -1056,7 +1691,7 @@ class MemoryBrainPlugin(Star):
             name = canon(str(r.get("sender") or "").strip())
             if not re.search(r"[\w\u4e00-\u9fff]", name):
                 continue
-            if name and name != sender and name != "角色" and name not in others:
+            if name and name != sender and name != "助手" and name not in others:
                 others.append(name)
         line = f"{SPEAKER_MARKER}{sender}"
         if others:
@@ -1064,6 +1699,336 @@ class MemoryBrainPlugin(Star):
         else:
             line += "\n群里可能还有别人，回话前先看名字。"
         return line
+
+    def _context_toy(self, event: AstrMessageEvent) -> dict | None:
+        """当前句没点名时，从最近聊天里找刚说过的玩具。"""
+        try:
+            from . import home as home_mod
+
+            toy = home_mod.find_toy_in_text(event.get_message_str() or "")
+            if toy:
+                return toy
+            key = self._session_key(event)
+            rows = self.store.conn.execute(
+                "SELECT text FROM raw_messages WHERE session_id=? ORDER BY id DESC LIMIT 12",
+                (key,),
+            ).fetchall()
+            for row in rows:
+                toy = home_mod.find_toy_in_text(str(row["text"] or ""))
+                if toy:
+                    return toy
+        except Exception:
+            pass
+        return None
+
+    async def _maybe_auto_toy(self, event: AstrMessageEvent) -> bool:
+        """对方明确要看玩具时，直接发图，不再赌模型会不会调工具。"""
+        if not self.auto_toy_image:
+            return False
+        try:
+            text = event.get_message_str() or ""
+            if "对方发来一张图片" in text or "请查看图片内容" in text:
+                return False
+            if re.search(r"玩具架.*(是啥|有什么|哪些|都有啥|都有什么|介绍|里面是)", text):
+                return False
+            if not re.search(r"看看|给我看|发.*图|图片|长什么样|啥样|样子|拍张|找找|翻翻", text):
+                return False
+            # 当前句必须真的在说玩具/礼物，不能只凭“看看”就回退到上次的包
+            if not re.search(r"玩具|礼物|背包|包|拼图|拼图|皮球|球", text):
+                return False
+            from . import home as home_mod
+
+            toy = self._context_toy(event)
+            if not toy and re.search(r"玩具|礼物", text):
+                toys = [t for t in home_mod.snapshot().get("toys", []) if t.get("img")]
+                if toys:
+                    toy = max(toys, key=lambda t: float(t.get("added_at") or 0))
+            img = str((toy or {}).get("img") or "")
+            if not toy or not img:
+                return False
+            path = home_mod.PAGES / img
+            if not path.exists():
+                return False
+            if re.search(r"背着|抱着|拿着|挎着|拎着|合.*照|一起.*拍|合个影|你.*背.*(?:包|玩具)", text):
+                await self.send_toy_selfie(event, str(toy.get("name") or ""))
+                self._sent_toy = toy
+                return False
+            key = self._session_key(event)
+            now = time.time()
+            toy_id = str(toy.get("id") or "")
+            last = self._last_auto_toy.get(key)
+            if last and last[0] == toy_id and now - last[1] < 45:
+                return False
+            await event.send(MessageChain([Image.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "image", path, f"玩具「{toy.get('name')}」")
+            self._sent_toy = toy
+            self._last_auto_toy[key] = (toy_id, now)
+            return False
+        except Exception:
+            logger.debug("[brain] 自动发玩具图失败", exc_info=True)
+            return False
+
+    async def _maybe_auto_home(self, event: AstrMessageEvent) -> bool:
+        """对方要看房间/她本人时，直接发房间或人物图。"""
+        if not self.auto_home_image:
+            return False
+        try:
+            text = event.get_message_str() or ""
+            if not re.search(r"看看|给我看|发.*图|图片|长什么样|啥样|样子|拍张|参观", text):
+                return False
+            if not re.search(r"房间|屋里|你长什么样|自拍|你的照片|你的图|人物形象", text):
+                return False
+            from . import home as home_mod
+
+            if re.search(r"房间|屋里", text):
+                path = home_mod.PAGES / "assets/home/room_base.jpg"
+            else:
+                path = home_mod.PAGES / "assets/home/character.png"
+            if not path.exists():
+                return False
+            await event.send(MessageChain([Image.fromFileSystem(str(path))]))
+            self._remember_bot_media(event, "image", path, "房间" if "房间" in text or "屋里" in text else "她的样子")
+            self._sent_home = "房间" if "房间" in text or "屋里" in text else "你的样子"
+            return False
+        except Exception:
+            logger.debug("[brain] 自动发房间图失败", exc_info=True)
+            return False
+
+    def _closet_hint(self, event: AstrMessageEvent) -> str:
+        try:
+            text = event.get_message_str() or ""
+            if not re.search(r"衣柜|衣服|裙子|外套|上衣|裤子|鞋|帽|围巾|睡衣|穿|换", text):
+                return ""
+            from . import home as home_mod
+
+            snap = home_mod.snapshot()
+            clothes = snap.get("clothes") or []
+            wearing = snap.get("wearing") or {}
+            if not clothes:
+                return f"{CLOSET_MARKER}你的衣柜还是空的。有人送衣服时会自动挂进去。"
+            names = "、".join(str(c.get("name") or "") for c in clothes)
+            now = str(wearing.get("name") or "还没换")
+            accs = snap.get("accessories") or []
+            worn_acc = snap.get("wearing_accessories") or []
+            acc_names = "、".join(str(a.get("name") or "") for a in accs) or "空"
+            worn_names = "、".join(str(a.get("name") or "") for a in worn_acc) or "没戴"
+            return (f"{CLOSET_MARKER}你现在穿的是：{now}。衣柜里有：{names}。"
+                    f"配饰盒：{acc_names}；当前佩戴：{worn_names}。"
+                    "不用喊全名，说「蓝格子」「那套蓝的」这种短词就行。换衣服调用 wear_clothing；戴配饰调用 wear_accessory；摘掉用 take_off_accessory。"
+                    "这些就是最新状态，直接回答，不要再翻文件或数据库。")
+        except Exception:
+            return ""
+
+    def _rename_hint(self, event: AstrMessageEvent) -> str:
+        try:
+            text = event.get_message_str() or ""
+            if not re.search(r"改名|改个名|改名字|改叫", text):
+                return ""
+            from . import home as home_mod
+
+            toy = home_mod.find_toy_in_text(text)
+            if not toy:
+                return ""
+            m = re.search(r"(?:叫|改成|改为|成)\s*([\u4e00-\u9fa5A-Za-z0-9]{1,12})", text)
+            if not m:
+                return ""
+            new = m.group(1).strip("的了吧呀啊")
+            for suffix in ("好吗", "行吗", "可以吗", "吧", "呢", "啊"):
+                if new.endswith(suffix):
+                    new = new[:-len(suffix)]
+            if not new or new == str(toy.get("name") or ""):
+                return ""
+            return (f"{RENAME_MARKER}对方想把「{toy.get('name')}」改名为「{new}」。"
+                    f"调用 rename_toy 工具，old_name 传「{toy.get('name')}」，new_name 传「{new}」。")
+        except Exception:
+            return ""
+
+    def _home_hint(self, event: AstrMessageEvent) -> str:
+        if self._sent_home:
+            return (f"{HOME_MARKER}你刚把{self._sent_home}的图片发给对方了。"
+                    f"{self._room_description()}"
+                    "用一句自然的话接住，不要问对方要图，也不要假装没发过。")
+        return ""
+
+    def _room_description(self) -> str:
+        """从 home.json 和 layers 目录生成，不写死家具。"""
+        try:
+            from . import home as home_mod
+
+            data = home_mod._read()
+            room = str(data.get("room") or "你的房间")
+            names = []
+            layers_dir = home_mod.PAGES / "assets/home/layers"
+            if layers_dir.exists():
+                for p in sorted(layers_dir.glob("*.png")):
+                    name = LAYER_NAMES.get(p.stem)
+                    if name and name not in names:
+                        names.append(name)
+            toys = [str(t.get("name") or "") for t in data.get("toys", []) if t.get("name")]
+            parts = [f"你住在一间叫「{room}」的房间里"]
+            if names:
+                parts.append("里面有：" + "、".join(names))
+            if toys:
+                parts.append("玩具架上现在有：" + "、".join(toys))
+            parts.append(CHARACTER_LOOK)
+            return "。".join(parts) + "。"
+        except Exception:
+            return CHARACTER_LOOK
+
+    def _home_knowledge(self, event: AstrMessageEvent) -> str:
+        try:
+            text = event.get_message_str() or ""
+            if not re.search(r"房间|屋里|你长什么样|你的样子|自拍|人物形象|你的照片|你的图", text):
+                return ""
+            return (f"{HOME_MARKER}{self._room_description()}"
+                    "有人问就照这个说；对方要看图时调用 send_home_picture。")
+        except Exception:
+            return ""
+
+    def _toy_hint(self, event: AstrMessageEvent) -> str:
+        """对方要看玩具时，明确提示模型调用发图工具。"""
+        try:
+            if self._sent_toy:
+                name = str(self._sent_toy.get("name") or "玩具")
+                return (f"{TOY_MARKER}你刚把「{name}」的图片发给对方了。"
+                        "现在用一句符合当前语气的话接住，不要再说找不到，"
+                        "也不要重复“找到了，是这个吧”。")
+            text = event.get_message_str() or ""
+            if "对方发来一张图片" in text or "请查看图片内容" in text:
+                return ""
+            from . import home as home_mod
+
+            if re.search(r"玩具架.*(是啥|有什么|哪些|都有啥|都有什么|介绍|里面是)", text) or re.search(r"有(什么|哪些)玩具", text):
+                names = "、".join(str(t.get("name") or "") for t in home_mod.snapshot().get("toys", []) if t.get("name"))
+                return f"{TOY_MARKER}玩具架上有：{names}。对方是在问有什么，用你自己的话介绍，不要只发一张图。"
+            if not re.search(r"看看|给我看|发.*图|图片|长什么样|啥样|样子|拍张", text):
+                return ""
+            toy = home_mod.find_toy_in_text(text)
+            if not toy or not toy.get("img"):
+                return ""
+            name = str(toy.get("name") or "")
+            if re.search(r"背着|抱着|拿着|挎着|拎着|合.*照|一起.*拍|合个影|你.*背.*(?:包|玩具)", text):
+                return (f"{TOY_MARKER}对方想看你和「{name}」在一起的样子。"
+                        f"调用 send_toy_selfie 工具，name 传「{name}」；不要只发一张商品图。")
+            return (f"{TOY_MARKER}对方想看「{name}」。调用 send_toy_picture 工具，"
+                    f"name 传「{name}」；不要回答找不到，也不要说自己翻不着。")
+        except Exception:
+            return ""
+
+    def _webchat_recent_block(self, event: AstrMessageEvent) -> str:
+        """桌宠/WebChat 这边带上 QQ 群和主人私聊的最近原话。"""
+        try:
+            if "webchat" not in str(getattr(event, "unified_msg_origin", "") or ""):
+                return ""
+            if not self.webchat_share_qq:
+                return ""
+            owner_id = str(self.config.get("owner_id") or "")
+            rows = []
+            if owner_id:
+                rows += self.store.conn.execute(
+                    "SELECT created_at, role, sender, text FROM raw_messages "
+                    "WHERE session_id LIKE ? ORDER BY id DESC LIMIT 6",
+                    (f"%FriendMessage:{owner_id}",),
+                ).fetchall()
+            rows += self.store.conn.execute(
+                "SELECT created_at, role, sender, text FROM raw_messages "
+                "WHERE session_id LIKE '%GroupMessage%' ORDER BY id DESC LIMIT 8"
+            ).fetchall()
+            if not rows:
+                return ""
+            rows.sort(key=lambda r: float(r["created_at"] or 0))
+            lines = [WEBCHAT_MARKER, "这是 QQ 群和主人私聊里最近的话，桌面这边接着聊，不要说自己没接到："]
+            for r in rows[-12:]:
+                stamp = datetime.datetime.fromtimestamp(float(r["created_at"] or 0)).strftime("%H:%M")
+                who = "助手" if str(r["role"]) == "bot" else str(r["sender"] or "QQ 那边")
+                lines.append(f"[{stamp}] {who}: {str(r['text'] or '')[:160]}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _private_recent_block(self, event: AstrMessageEvent) -> str:
+        """群聊里带上主人最近私聊的几句话，避免两边说法打架。"""
+        try:
+            if not event.get_group_id():
+                return ""
+            if not self.group_recall_private:
+                return ""
+            owner_id = str(self.config.get("owner_id") or "")
+            if not owner_id:
+                return ""
+            rows = self.store.conn.execute(
+                "SELECT created_at, role, text FROM raw_messages "
+                "WHERE session_id LIKE ? ORDER BY id DESC LIMIT 6",
+                (f"%FriendMessage:{owner_id}",),
+            ).fetchall()
+            if not rows:
+                return ""
+            logger.info("[brain] 私聊同步：group=%r rows=%d", event.get_group_id(), len(rows))
+            lines = [PRIVATE_MARKER, "这是主人和你在私聊里刚说的话；群里的对话要接得上，但不要主动复述私聊细节："]
+            for r in reversed(rows):
+                stamp = datetime.datetime.fromtimestamp(float(r["created_at"] or 0)).strftime("%H:%M")
+                who = "助手" if str(r["role"]) == "bot" else "主人"
+                lines.append(f"[{stamp}] {who}: {str(r['text'] or '')[:160]}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _group_recent_block(self, event: AstrMessageEvent) -> str:
+        """主人私聊问群里的事时，把最近群消息直接带进来，不等攒批摘要。"""
+        try:
+            if "FriendMessage" not in str(getattr(event, "unified_msg_origin", "")):
+                return ""
+            if not self.private_recall_group:
+                return ""
+            owner_set = {x.strip() for x in str(self.config.get("owner_names", "")).split(",") if x.strip()}
+            is_owner = (
+                str(event.get_sender_id()) == str(self.config.get("owner_id") or "")
+                or str(event.get_sender_name() or "") in owner_set
+            )
+            if not is_owner:
+                return ""
+            text = event.get_message_str() or ""
+            if not re.search(r"群|刚才|刚刚|他们|朋友", text):
+                return ""
+            rows = self.store.conn.execute(
+                "SELECT created_at, role, sender, text FROM raw_messages "
+                "WHERE session_id LIKE '%GroupMessage%' ORDER BY id DESC LIMIT 8"
+            ).fetchall()
+            if not rows:
+                return ""
+            logger.info("[brain] 群同步：owner=%s group=%r text=%r rows=%d", is_owner, event.get_group_id(), text[:40], len(rows))
+            lines = [GROUP_MARKER, "这是群里最近的对话，你可以接着聊，不要说自己没接到："]
+            for r in reversed(rows):
+                stamp = datetime.datetime.fromtimestamp(float(r["created_at"] or 0)).strftime("%H:%M")
+                who = "助手" if str(r["role"]) == "bot" else str(r["sender"] or "群里的人")
+                lines.append(f"[{stamp}] {who}: {str(r['text'] or '')[:160]}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _gift_block(self, event: AstrMessageEvent) -> str:
+        """已经揭晓的秘密礼物：让聊天里的她知道是谁送的，不用再问。"""
+        try:
+            text = event.get_message_str() or ""
+            if not re.search(r"礼物|包|背包|送的|谢谢|谢|朋友|惊喜", text):
+                return ""
+            from . import home as home_mod
+
+            data = home_mod._read()
+            items = [t for t in data.get("toys", []) if t.get("secret_revealed")]
+            if not items:
+                return ""
+            lines = [GIFT_MARKER, "只在对方问起时提，不要主动反复感谢："]
+            for toy in items[-3:]:
+                when = human_when(float(toy.get("added_at") or 0))
+                lines.append(
+                    f"- {toy.get('name')}：{toy.get('from')}{when}送的。"
+                    f"你看不见字，但记得这句话；有人问就直接说 {toy.get('from')} 和大概时间。"
+                    f"你已经谢过，不用每次再谢。"
+                )
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def _profile_block(self, event: AstrMessageEvent) -> str:
         """当前说话人 + 话里提到的人，带出对他们的整体印象。"""
@@ -1247,11 +2212,11 @@ class MemoryBrainPlugin(Star):
         """把看过的文章/视频/评论导入记忆（source=media，公开可见）。"""
         production = paths is None
         if production:
-            base = (_DATA / "self")
+            base = Path("/path/to/AstrBot/data/self")
             paths = [base / "learning_journal.jsonl", base / "share_queue.jsonl"]
         items = media.load_items(list(paths), limit=400)
         if production:
-            items += media.load_watched((_LIFE_DIR / "watched.jsonl"))
+            items += media.load_watched(Path("/path/to/life/watched.jsonl"))
         if not items:
             return 0
         known = set()
@@ -1301,7 +2266,7 @@ class MemoryBrainPlugin(Star):
         """从最近的笔记和看过的内容里提炼可照着做的道理。"""
         if not self.lessons_enabled:
             return 0
-        notes = media.load_life_notes((_LIFE_DIR / "notes.jsonl"), limit=80)
+        notes = media.load_life_notes(Path("/path/to/life/notes.jsonl"), limit=80)
         picked = [
             n["text"] for n in notes
             if n["kind"] in ("study", "book", "diary") or n["keep"] == "long"
@@ -1365,7 +2330,7 @@ class MemoryBrainPlugin(Star):
 
     async def _import_life_notes(self, limit: int = 20, path: Path | None = None) -> int:
         """她自己的笔记：long 进长期记忆，temp 进 1 天的工作记忆。"""
-        notes = media.load_life_notes(path or (_LIFE_DIR / "notes.jsonl"))
+        notes = media.load_life_notes(path or Path("/path/to/life/notes.jsonl"))
         if not notes:
             return 0
         known = set()
@@ -1643,7 +2608,7 @@ class MemoryBrainPlugin(Star):
                 resp = await provider.text_chat(
                     prompt=("下面是一个角色学到的道理和最近的事。用 2–3 句做一次自省：哪条道理这周真用上了？"
                             "哪条没做到？只输出自省本身，不要客套。\n" + body),
-                    system_prompt="你是角色，在写给自己看的一页复盘。",
+                    system_prompt="你是助手，在写给自己看的一页复盘。",
                 )
                 text = (getattr(resp, "completion_text", "") or "").strip()[:300]
             except Exception as exc:

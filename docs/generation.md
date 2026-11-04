@@ -4,12 +4,14 @@
 
 作者的**本机 live 版**使用本机 ComfyUI 生成图片和视频，AstrBot 只负责调用 HTTP 接口。
 
-公开仓库**不包含**：
+公开仓库**包含客户端代码**（`imagegen.py` / `videogen.py`），但**不包含**：
 
 - 作者的 ComfyUI 工作流
 - 作者的模型文件
 - 作者的 API key / token
 - 作者的本机地址
+
+代码里的模型名只是作者本机的示例，换模型时需要同步修改工作流。
 
 所以网友下载后，生图、生视频**不会自动可用**，需要自己配置后端。
 
@@ -19,8 +21,17 @@
 
 1. 自行安装 ComfyUI
 2. 启动 ComfyUI，确认 `http://127.0.0.1:8188` 可访问
-3. 在 AstrBot 插件配置里填写 ComfyUI 地址和对应工作流
+3. 在 AstrBot 插件配置里填写 `comfy_url`
 4. 生图与生视频共用这套本地服务；显存不够时先跑图片，再跑视频
+
+配置项：
+
+```text
+comfy_url       默认 http://127.0.0.1:8188
+media_targets   跨会话发送用，格式：名字=QQ号,名字=QQ号
+NAPCAT_API      NapCat 地址，默认 http://127.0.0.1:3000
+NAPCAT_TOKEN    NapCat token，没有就留空
+```
 
 注意：
 

@@ -53,10 +53,19 @@ class PageApi:
             ("/media", self.import_media, ["POST"], "导入媒体知识"),
             ("/lessons", self.make_lessons, ["POST"], "提炼道理"),
             ("/report", self.report, ["GET"], "运行报表"),
-            ("/home", self.home, ["GET"], "房间"),
+            ("/home", self.home, ["GET"], "助手的家"),
             ("/home/toy", self.home_toy, ["POST"], "送一个玩具"),
             ("/home/books", self.home_books, ["GET"], "书架"),
             ("/home/toy/delete", self.home_toy_delete, ["POST"], "删掉一个玩具"),
+            ("/home/toy/rename", self.home_toy_rename, ["POST"], "给玩具改名"),
+            ("/home/clothes", self.home_clothes, ["GET"], "衣柜"),
+            ("/home/clothes/wear", self.home_clothes_wear, ["POST"], "换衣服"),
+            ("/home/clothes/delete", self.home_clothes_delete, ["POST"], "删衣服"),
+            ("/home/clothes/rename", self.home_clothes_rename, ["POST"], "衣服改名"),
+            ("/home/accessories", self.home_accessories, ["GET"], "配饰盒"),
+            ("/home/accessories/wear", self.home_accessories_wear, ["POST"], "戴配饰"),
+            ("/home/accessories/off", self.home_accessories_off, ["POST"], "摘配饰"),
+            ("/home/accessories/delete", self.home_accessories_delete, ["POST"], "删配饰"),
             ("/health", self.health, ["GET"], "记忆体检"),
             ("/health/fix", self.health_fix, ["POST"], "体检修复"),
             ("/conflicts", self.conflicts, ["GET"], "冲突列表"),
@@ -494,7 +503,6 @@ class PageApi:
             logger.exception("[brain] 生成反思失败")
             return _err(str(exc))
 
-
     async def home(self) -> dict[str, Any]:
         from . import home as home_mod
 
@@ -509,14 +517,13 @@ class PageApi:
 
         data = await request.json(default={}) or {}
         try:
-            toy = home_mod.add_toy(
-                str(data.get("name") or ""), str(data.get("desc") or ""),
-                from_=str(data.get("from") or "你"),
-                img=str(data.get("img") or ""), image_data=str(data.get("image") or ""),
-                secret=bool(data.get("secret")),
-            )
+            toy = home_mod.add_toy(str(data.get("name") or ""), str(data.get("desc") or ""),
+                                  from_=str(data.get("from") or "主人"),
+                                  img=str(data.get("img") or ""), image_data=str(data.get("image") or ""),
+                                  secret=bool(data.get("secret")))
+            await self._recognize_toy(toy, str(data.get("image") or ""))
             try:
-                text = f"收到一个玩具：{toy['name']}。{toy.get('desc') or ''}".strip()
+                text = f"主人送了一个玩具：{toy['name']}。{toy.get('desc') or ''}".strip()
                 vec = await self.plugin._embed(text)
                 self.plugin.engine.remember(
                     text, kind="fact", importance=0.65, source="home",
@@ -529,6 +536,22 @@ class PageApi:
         except Exception as exc:
             return _err(str(exc))
 
+    async def home_toy_rename(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        data = await request.json(default={}) or {}
+        try:
+            hit = home_mod.rename_toy(
+                toy_id=str(data.get("id") or ""),
+                old_name=str(data.get("old_name") or ""),
+                new_name=str(data.get("new_name") or ""),
+            )
+            if not hit:
+                return _err("没有这个玩具")
+            return _ok({"toy": hit, "home": home_mod.snapshot()})
+        except Exception as exc:
+            return _err(str(exc))
+
     async def home_toy_delete(self) -> dict[str, Any]:
         from . import home as home_mod
 
@@ -537,9 +560,100 @@ class PageApi:
             gone = home_mod.delete_toy(str(data.get("id") or ""))
             if not gone:
                 return _err("没有这个玩具")
+            try:
+                name = str(gone.get("name") or "")
+                if name:
+                    for m in self.plugin.store.list_memories(source="home", limit=200):
+                        if name in str(m.get("text") or ""):
+                            self.plugin.store.delete_memory(int(m["id"]))
+            except Exception:
+                pass
             return _ok({"deleted": gone.get("name"), "home": home_mod.snapshot()})
         except Exception as exc:
             return _err(str(exc))
+
+    async def home_clothes(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        try:
+            snap = home_mod.snapshot()
+            return _ok({"clothes": snap.get("clothes") or [], "wearing": snap.get("wearing")})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def home_clothes_wear(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        data = await request.json(default={}) or {}
+        try:
+            hit = home_mod.wear_clothing(
+                cloth_id=str(data.get("id") or ""),
+                name=str(data.get("name") or ""),
+            )
+            if not hit:
+                return _err("衣柜里没有这件衣服")
+            return _ok({"wearing": hit, "home": home_mod.snapshot()})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def home_clothes_rename(self) -> dict[str, Any]:
+        from . import home as home_mod
+        data = await request.json(default={}) or {}
+        try:
+            hit = home_mod.rename_clothing(
+                str(data.get("new_name") or ""),
+                cloth_id=str(data.get("id") or ""),
+                old_name=str(data.get("old_name") or ""),
+            )
+            if not hit:
+                return _err("衣柜里没有这件衣服")
+            return _ok({"cloth": hit, "home": home_mod.snapshot()})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def home_clothes_delete(self) -> dict[str, Any]:
+        from . import home as home_mod
+
+        data = await request.json(default={}) or {}
+        try:
+            gone = home_mod.delete_clothing(
+                cloth_id=str(data.get("id") or ""),
+                name=str(data.get("name") or ""),
+            )
+            if not gone:
+                return _err("衣柜里没有这件衣服")
+            return _ok({"deleted": gone.get("name"), "home": home_mod.snapshot()})
+        except Exception as exc:
+            return _err(str(exc))
+
+    async def home_accessories(self) -> dict[str, Any]:
+        from . import home as home_mod
+        snap = home_mod.snapshot()
+        return _ok({"accessories": snap.get("accessories") or [], "wearing": snap.get("wearing_accessories") or []})
+
+    async def home_accessories_wear(self) -> dict[str, Any]:
+        from . import home as home_mod
+        data = await request.json(default={}) or {}
+        hit = home_mod.wear_accessory(acc_id=str(data.get("id") or ""), name=str(data.get("name") or ""))
+        if not hit:
+            return _err("配饰盒里没有这件")
+        return _ok({"wearing": hit, "home": home_mod.snapshot()})
+
+    async def home_accessories_off(self) -> dict[str, Any]:
+        from . import home as home_mod
+        data = await request.json(default={}) or {}
+        hit = home_mod.take_off_accessory(acc_id=str(data.get("id") or ""), name=str(data.get("name") or ""))
+        if not hit:
+            return _err("配饰盒里没有这件")
+        return _ok({"taken_off": hit.get("name"), "home": home_mod.snapshot()})
+
+    async def home_accessories_delete(self) -> dict[str, Any]:
+        from . import home as home_mod
+        data = await request.json(default={}) or {}
+        gone = home_mod.delete_accessory(acc_id=str(data.get("id") or ""), name=str(data.get("name") or ""))
+        if not gone:
+            return _err("配饰盒里没有这件")
+        return _ok({"deleted": gone.get("name"), "home": home_mod.snapshot()})
 
     async def home_books(self) -> dict[str, Any]:
         from . import home as home_mod
@@ -549,6 +663,40 @@ class PageApi:
         except Exception as exc:
             logger.exception("[brain] 读取书架失败")
             return _err(str(exc))
+
+    async def _recognize_toy(self, toy: dict, image_data: str) -> None:
+        """上传后让视觉模型看一下，补类型和描述；失败就保持默认。"""
+        if not image_data:
+            return
+        try:
+            provider = self.plugin._get_provider("")
+            if provider is None:
+                return
+            resp = await provider.text_chat(
+                prompt='看这张玩具图片，只输出 JSON：{"name":"短中文名","type":"plush|puzzle|ball|other","desc":"20字内描述"}。不要输出别的。',
+                system_prompt="你在帮主人整理玩具架，只根据图片判断，不夸大。",
+                image_urls=[image_data],
+            )
+            text = str(getattr(resp, "completion_text", "") or "").strip()
+            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            import json as _json
+            from . import home as home_mod
+            info = _json.loads(text)
+            fields = {}
+            typ = str(info.get("type") or "")
+            if typ in ("plush", "puzzle", "ball", "gift"):
+                fields["type"] = typ
+            desc = str(info.get("desc") or "").strip()[:80]
+            if desc:
+                fields["desc"] = desc
+            name = str(info.get("name") or "").strip()[:20]
+            if name and str(toy.get("name") or "") in ("", "礼物") and not any(w in name for w in ("无法", "不确定", "没有", "看不清")):
+                fields["name"] = name
+            if fields:
+                home_mod.update_toy(toy["id"], **fields)
+                toy.update(fields)
+        except Exception:
+            logger.debug("[brain] 玩具识别失败", exc_info=True)
 
     async def health(self) -> dict[str, Any]:
         from . import health
