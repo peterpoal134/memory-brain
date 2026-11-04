@@ -24,7 +24,7 @@
 主机：Windows 测试机（具体地址不公开）
 
 - [ ] `python --version` ≥ 3.10
-- [ ] 解压 `memory-core-v0.1.0.zip`
+- [ ] 解压 `memory-core-v0.2.1.zip`
 - [ ] 建 venv，`pip install .`
 - [ ] 启动 `memory-core`，`/health` 200
 - [ ] `/panel` 能打开
@@ -42,7 +42,7 @@
 cd <release-v1.1.0>
 zip -qr memory-plugins-v1.1.0.zip plugins -x '*/__pycache__/*' '*.pyc'
 zip -qr life-loop-v1.1.0.zip life -x '*/__pycache__/*' '*.pyc' '*/books/*' '*.db*'
-zip -qr memory-core-v0.1.0.zip memory-core -x '*/__pycache__/*' '*.pyc' '*/data/*' '*.db*'
+zip -qr memory-core-v0.2.1.zip memory-core -x '*/__pycache__/*' '*.pyc' '*/data/*' '*.db*'
 ```
 
 产物：
@@ -50,7 +50,7 @@ zip -qr memory-core-v0.1.0.zip memory-core -x '*/__pycache__/*' '*.pyc' '*/data/
 ```
 dist/memory-plugins-v1.1.0.zip
 dist/life-loop-v1.1.0.zip
-dist/memory-core-v0.1.0.zip
+dist/memory-core-v0.2.1.zip
 ```
 
 ## 4. 推送
@@ -80,7 +80,7 @@ git push origin v1.1.0
 ```
 memory-plugins-v1.1.0.zip
 life-loop-v1.1.0.zip
-memory-core-v0.1.0.zip
+memory-core-v0.2.1.zip
 ```
 
 ## 6. 发布后验证
