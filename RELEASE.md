@@ -21,7 +21,7 @@
 
 ## 2. Windows 测试
 
-主机：`ssh win`（127.0.0.1，dshremote）
+主机：Windows 测试机（具体地址不公开）
 
 - [ ] `python --version` ≥ 3.10
 - [ ] 解压 `memory-core-v0.1.0.zip`
