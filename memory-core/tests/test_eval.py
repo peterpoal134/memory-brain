@@ -21,7 +21,7 @@ class TestEval(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_hit(self):
-        self.mem.remember({"text": "用户喜欢蓝色的毛绒拼图", "importance": 0.8})
+        self.mem.remember({"text": "用户喜欢蓝色的拼图", "importance": 0.8})
         self.eval.add_query({"query": "用户喜欢什么玩具", "expect_any": ["拼图"]})
         out = self.eval.run()
         self.assertEqual(out["metrics"]["recall@1"], 1.0)

@@ -7,6 +7,10 @@
 
 ![v1.2.1 小版本更新对比](docs/升级对比-v2.png)
 
+> **使用许可：本项目源代码公开，禁止商业使用。**
+> 商业部署、商业产品集成、收费服务等必须事先取得作者书面授权；未经授权将追究法律责任。
+> 详见 [LICENSE](LICENSE)。
+
 ## 两种用法
 
 - **AstrBot 用户**：装 `plugins/` 下的插件，得到完整角色（记忆、情绪、生活层、面板）
@@ -20,6 +24,7 @@
 - [DSH 窗口](dsh/README.md)
 - [memory-core + DSH](memory-core/docs/dsh.md)
 - [房间与玩具](docs/room.md)
+- [生图与生视频：自行配置 ComfyUI/API](docs/generation.md)
 
 ## 它解决什么
 

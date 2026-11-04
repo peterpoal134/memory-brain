@@ -21,8 +21,8 @@ class TestMaintenance(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_conflict(self):
-        self.mem.remember({"text": "用户喜欢毛绒拼图", "kind": "fact", "entities": [("用户", "person")]})
-        self.mem.remember({"text": "用户讨厌毛绒拼图", "kind": "fact", "entities": [("用户", "person")]})
+        self.mem.remember({"text": "用户喜欢蓝色拼图", "kind": "fact", "entities": [("用户", "person")]})
+        self.mem.remember({"text": "用户讨厌蓝色拼图", "kind": "fact", "entities": [("用户", "person")]})
         out = self.m.run()
         self.assertGreaterEqual(out["conflicts"], 1)
         cs = self.m.conflicts()

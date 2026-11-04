@@ -19,7 +19,7 @@ class TestCore(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_remember_recall(self):
-        self.svc.remember({"text": "用户喜欢蓝灰色的毛绒拼图", "kind": "fact", "importance": 0.8, "visibility": "public"})
+        self.svc.remember({"text": "用户喜欢蓝灰色的拼图", "kind": "fact", "importance": 0.8, "visibility": "public"})
         r = self.svc.recall({"query": "拼图", "k": 3})
         self.assertTrue(r["hits"])
         self.assertIn("拼图", r["block"])

@@ -22,7 +22,7 @@ pages/panel/assets/home/
 `home.json` 里的 `img` 写相对 `assets/home/` 的路径，例如：
 
 ```json
-{"name":"毛绒拼图","img":"assets/home/toys/whale.png"}
+{"name":"拼图","img":"assets/home/toys/puzzle.png"}
 ```
 
 占位图只有色块和文字，能跑通房间 UI；换成自己的图后就是完整房间。
@@ -39,7 +39,7 @@ POST /astrbot_plugin_memory_brain/page/home/toy/delete
 送玩具：
 
 ```json
-{"name":"毛绒拼图","desc":"蓝灰色","from":"你"}
+{"name":"拼图","desc":"蓝灰色","from":"你"}
 ```
 
 ## 限制

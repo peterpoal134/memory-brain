@@ -620,7 +620,7 @@ def interest_from_text(text: str) -> str:
     hits = {
         "AI 和记忆系统": ("AI", "模型", "记忆", "agent", "智能体"),
         "摄影和视频剪辑": ("视频", "剪辑", "拍", "运镜", "镜头"),
-        "城市散步和咖啡": ("散步", "咖啡", "梧桐", "路线", " citywalk", "citywalk"),
+        "城市散步和咖啡": ("散步", "咖啡", "街道", "路线", "citywalk"),
         "心理学和人的行为": ("心理", "情绪", "行为", "关系", "沟通"),
         "好吃的": ("好吃", "美食", "面", "粥", "菜", "店"),
     }
@@ -771,7 +771,7 @@ def phone_interested(text: str) -> bool:
     """轻量兴趣判断，不额外调用模型。"""
     if not text:
         return False
-    return any(k in text for k in ("拼图", "动画", "城市", "AI", "女仆", "白饭", "配音", "剪辑", "猫", "手作", "摄影", "表情包"))
+    return any(k in text for k in ("动画", "AI", "配音", "剪辑", "猫", "手作", "摄影", "表情包", "书", "电影"))
 
 
 def phone_play() -> str:
@@ -933,7 +933,7 @@ message 只在 qzone/group 时需要：像手机里随手打的 1～2 句，可�
 {json.dumps(symbolic(state), ensure_ascii=False)}
 
 【连续主题检测】
-最近动作里反复出现“拼图/某个话题/查资料”时，今天禁止再提同一个，换 phone/rest/idle 或别的主题。
+最近动作里反复出现同一个话题时，今天禁止再提同一个，换 phone/rest/idle 或别的主题。
 
 现在选一个动作。只输出 JSON。"""
     text = call_llm(system, user, max_tokens=500, reasoning="none")
@@ -991,11 +991,15 @@ def mark_rate(action: str) -> None:
 
 
 def is_fixated() -> bool:
+    # 公开版不内置个人话题；由状态里的 blocked_topics 显式配置。
+    topics = load_json(STATE, {}).get("blocked_topics") or []
+    if not topics:
+        return False
     rows = recent_actions(8)
     hits = 0
     for r in rows:
         blob = str(r.get("reason", "")) + " " + str(r.get("message", ""))
-        if "拼图" in blob or "某个话题" in blob or "拼图动画" in blob:
+        if any(str(t) and str(t) in blob for t in topics):
             hits += 1
     return hits >= 3
 
@@ -1015,12 +1019,13 @@ def run_once(force: str | None = None, send: bool = False) -> dict:
     else:
         result = decide(state, goals, soul, recent_diary())
     if not force and is_fixated() and now.hour not in QUIET:
-        state["blocked_topics"] = ["拼图", "某个话题"]
+        # 保留已有配置；没有就写一个通用占位，避免公开版出现个人话题。
+        state.setdefault("blocked_topics", ["最近反复纠结的事"])
         state["current_project"] = "先换点轻松的：玩会儿手机、随便看看别的"
         if rate_ok("phone") and state.get("last_action") != "phone":
-            result = {"action": "phone", "reason": "连续纠结拼图/某个话题，今天先放下，去玩会儿手机换换脑子", "message": ""}
+            result = {"action": "phone", "reason": "连续纠结同一个话题，今天先放下，去玩会儿手机换换脑子", "message": ""}
         else:
-            result = {"action": "idle", "reason": "连续纠结拼图/某个话题，手机刚玩过/还没到时间，先歇一会儿", "message": ""}
+            result = {"action": "idle", "reason": "连续纠结同一个话题，手机刚玩过/还没到时间，先歇一会儿", "message": ""}
     action = result["action"]
     if not rate_ok(action):
         result = {"action": "idle", "reason": "刚做过，先缓缓", "message": ""}

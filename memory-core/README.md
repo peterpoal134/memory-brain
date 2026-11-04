@@ -38,7 +38,7 @@ python -m memory_core.server
 ```bash
 curl -s http://127.0.0.1:8780/remember \
   -H 'Authorization: Bearer <your-token>' -H 'Content-Type: application/json' \
-  -d '{"text":"用户喜欢蓝灰色的毛绒拼图","kind":"fact","importance":0.8,"visibility":"public"}'
+  -d '{"text":"用户喜欢蓝灰色的拼图","kind":"fact","importance":0.8,"visibility":"public"}'
 ```
 
 召回：
