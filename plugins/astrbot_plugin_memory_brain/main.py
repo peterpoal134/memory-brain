@@ -15,6 +15,7 @@ import asyncio
 import base64
 import datetime
 import json
+import os
 import re
 import tempfile
 import time
@@ -35,7 +36,11 @@ from . import (
 )
 from .report import build as build_report
 
-MOOD_FILE = Path("/path/to/AstrBot/data/plugin_data/astrbot_plugin_persona_state/mood.json")
+PLUGIN_ROOT = Path(__file__).resolve().parent
+DATA_DIR = PLUGIN_ROOT.parents[1]  # AstrBot/data
+WORKSPACE = PLUGIN_ROOT.parents[3]
+LIFE_DIR = Path(os.environ.get("ASSISTANT_LIFE_DIR", str(WORKSPACE / "life")))
+MOOD_FILE = Path(os.environ.get("ASSISTANT_MOOD_FILE", str(DATA_DIR / "plugin_data" / "astrbot_plugin_persona_state" / "mood.json")))
 from .engine import MemoryEngine, _cosine
 from .store import Store
 
@@ -1083,7 +1088,7 @@ class MemoryBrainPlugin(Star):
             uid = targets(str(self.config.get("media_targets") or "")).get(str(target or "").strip())
             if not uid:
                 return f"没有找到 {target} 的私聊 ID"
-            exe = os.environ.get("ASSISTANT_VOICE", "/path/to/bin/assistant-voice")
+            exe = os.environ.get("ASSISTANT_VOICE", str(WORKSPACE / "bin" / "assistant-voice"))
             out = tempfile.mktemp(suffix=".wav")
             p = await asyncio.to_thread(subprocess.run, [exe, "--out", out, text], capture_output=True, text=True, timeout=120)
             if p.returncode != 0:
@@ -2212,11 +2217,11 @@ class MemoryBrainPlugin(Star):
         """把看过的文章/视频/评论导入记忆（source=media，公开可见）。"""
         production = paths is None
         if production:
-            base = Path("/path/to/AstrBot/data/self")
+            base = Path(os.environ.get("ASSISTANT_SELF_DIR", str(WORKSPACE / "AstrBot" / "data" / "self")))
             paths = [base / "learning_journal.jsonl", base / "share_queue.jsonl"]
         items = media.load_items(list(paths), limit=400)
         if production:
-            items += media.load_watched(Path("/path/to/life/watched.jsonl"))
+            items += media.load_watched(LIFE_DIR / "watched.jsonl")
         if not items:
             return 0
         known = set()
@@ -2266,7 +2271,7 @@ class MemoryBrainPlugin(Star):
         """从最近的笔记和看过的内容里提炼可照着做的道理。"""
         if not self.lessons_enabled:
             return 0
-        notes = media.load_life_notes(Path("/path/to/life/notes.jsonl"), limit=80)
+        notes = media.load_life_notes(LIFE_DIR / "notes.jsonl", limit=80)
         picked = [
             n["text"] for n in notes
             if n["kind"] in ("study", "book", "diary") or n["keep"] == "long"
@@ -2330,7 +2335,7 @@ class MemoryBrainPlugin(Star):
 
     async def _import_life_notes(self, limit: int = 20, path: Path | None = None) -> int:
         """她自己的笔记：long 进长期记忆，temp 进 1 天的工作记忆。"""
-        notes = media.load_life_notes(path or Path("/path/to/life/notes.jsonl"))
+        notes = media.load_life_notes(path or LIFE_DIR / "notes.jsonl")
         if not notes:
             return 0
         known = set()
