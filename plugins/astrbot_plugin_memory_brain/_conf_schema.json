@@ -45,7 +45,7 @@
     "description": "用模型整理记忆",
     "hint": "开启后每批消息调一次模型做摘要+实体关系；关闭则拼接原文（省钱但图很粗）。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "alias_map": {
     "description": "实体别名",
