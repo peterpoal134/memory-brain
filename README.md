@@ -147,6 +147,8 @@ python -m unittest discover -s tests
 
 ## License
 
+Copyright (c) 2026 memory-brain contributors
+
 本项目采用 **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International**（SPDX：`CC-BY-NC-SA-4.0`）。
 
 - 允许：个人学习、研究、测试、非商业自用和修改
