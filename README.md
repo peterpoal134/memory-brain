@@ -46,7 +46,8 @@
 
 - 人格文件**只读**，所有增强都是往 system_prompt 追加“注入块”
 - 每个注入块带 marker，重复注入先删旧块
-- 每个模块一个开关，默认关，关掉后她还是原来的她
+- 每个模块一个开关，默认关；只有显式打开后，注入/生成模块才会工作
+- “默认关”指 `_conf_schema.json` 里的 `inject`、`profile_enabled`、`reflection_enabled`、`inject_style`、`multimodal_enabled`、`voice_enabled`、`video_enabled`、`lessons_enabled` 等行为开关
 - 生活层只写自己的目录，不碰人格和聊天数据
 
 ## 仓库结构
@@ -90,10 +91,13 @@ python life_loop.py --send      # 常驻
 
 ## 建议的开启顺序
 
-1. 只开写入，不开注入，跑一天看摘要质量
-2. 私聊开注入，再开群聊
-3. 最后接情绪层
-4. 建 20–40 条自己的评估集，改一次跑一次
+所有行为模块默认关闭，首次使用请按下面顺序显式打开：
+
+1. 只开写入（`llm_summary`），不开 `inject`，跑一天看摘要质量
+2. 私聊开 `inject`，再开 `inject_in_group`
+3. 按需打开画像、反思、抽象、程序记忆、图片/语音/视频记忆
+4. 最后接情绪层
+5. 建 20–40 条自己的评估集，改一次跑一次
 
 ## 能到什么程度（参考值，不是承诺）
 
@@ -143,7 +147,14 @@ python -m unittest discover -s tests
 
 ## License
 
-AGPL-3.0-or-later。因为 AstrBot 本身是 AGPL-3.0，插件作为衍生作品沿用同一协议。
+本项目采用 **PolyForm Noncommercial License 1.0.0**（SPDX：`PolyForm-Noncommercial-1.0.0`）。
+
+- 允许：个人学习、研究、测试、非商业自用和修改
+- 禁止：商业使用、收费部署、商业产品集成、企业生产环境使用
+- 商业授权：需事先取得作者书面授权，通过仓库 Issue 联系
+- 这不是 AGPL；README 以前写成 AGPL 是错误的，已删除
+
+完整条款见 [LICENSE](LICENSE)。
 
 ## 说明
 

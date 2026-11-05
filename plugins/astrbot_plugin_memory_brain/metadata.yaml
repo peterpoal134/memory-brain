@@ -7,3 +7,5 @@ support_platforms:
   - aiocqhttp
 pages:
   - panel
+
+license: PolyForm-Noncommercial-1.0.0

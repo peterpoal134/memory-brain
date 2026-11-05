@@ -3,7 +3,7 @@
     "description": "把检索到的记忆注入提示词",
     "hint": "关闭后只记录不注入（仍可用 /大脑 检索 手动查）。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "recall_k": {
     "description": "每轮注入几条",
@@ -57,7 +57,7 @@
     "description": "自动生成人物画像",
     "hint": "每天睡觉整理时，给最活跃的人/话题写一段印象。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "profile_max_per_run": {
     "description": "每天最多几个",
@@ -81,7 +81,7 @@
     "description": "每日反思",
     "hint": "每天写一篇「今天印象最深的三件事」，存成一条元记忆。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "recall_min_score": {
     "description": "检索分数门槛",
@@ -93,13 +93,13 @@
     "description": "群里也注入记忆",
     "hint": "关闭后群里不注入长期记忆（画像仍按自己的开关）。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "inject_profile": {
     "description": "把人物画像注入对话",
     "hint": "说话人/提到的人有画像时，把印象带进提示词（约 150 token）。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "access_decay_boost": {
     "description": "常用记忆的衰减减免",
@@ -129,7 +129,7 @@
     "description": "事件沉淀成事实",
     "hint": "每天从流水账里抽长期有效的事实/偏好，存成 kind=fact。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "abstract_max_facts": {
     "description": "每天最多几条事实",
@@ -147,7 +147,7 @@
     "description": "注入真人语感",
     "hint": "统计最近真人消息的句长/标点/语气词，作为说话参考。不调模型。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "style_sample_size": {
     "description": "语感样本条数",
@@ -165,13 +165,13 @@
     "description": "程序记忆",
     "hint": "用户确认完成后，把这次做法整理成可复用的步骤。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "multimodal_enabled": {
     "description": "图片记忆",
     "hint": "对方发图时让视觉模型写一句话存进记忆。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "multimodal_in_group": {
     "description": "群里的图也记",
@@ -201,13 +201,13 @@
     "description": "群聊标注说话人",
     "hint": "群聊里注入当前说话人和其他人，避免认错人。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "voice_enabled": {
     "description": "语音记忆",
     "hint": "收到语音时本地转文字，存进记忆并让这一轮能接话。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "voice_model": {
     "description": "whisper 模型大小",
@@ -219,7 +219,7 @@
     "description": "视频记忆",
     "hint": "收到视频时抽几帧描述 + 转写音轨，存成记忆。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "video_max_per_day": {
     "description": "每天最多记几段视频",
@@ -231,7 +231,7 @@
     "description": "提炼道理",
     "hint": "每天从笔记和看过的内容里抽 2-3 条可照着做的道理。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "protect_names": {
     "description": "核心人物名单",
@@ -279,13 +279,13 @@
     "description": "自动发玩具图",
     "hint": "明确提到玩具并说看看/找找时，跳过模型直接发图。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "auto_home_image": {
     "description": "自动发房间图",
     "hint": "明确说想看房间/本人时，直接发房间或人物图。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "comfy_url": {
     "description": "ComfyUI 地址",
