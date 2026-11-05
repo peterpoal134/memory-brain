@@ -7,7 +7,7 @@
 
 ![v1.2.1 小版本更新对比](docs/升级对比-v2.png)
 
-> **使用许可：PolyForm Noncommercial 1.0.0（源代码公开，禁止商业使用）。**
+> **使用许可：CC BY-NC-SA 4.0（署名—非商业性使用—相同方式共享）。**
 > 商业部署、商业产品集成、收费服务等必须事先取得作者书面授权；未经授权将追究法律责任。
 > 详见 [LICENSE](LICENSE)。
 
@@ -147,14 +147,14 @@ python -m unittest discover -s tests
 
 ## License
 
-本项目采用 **PolyForm Noncommercial License 1.0.0**（SPDX：`PolyForm-Noncommercial-1.0.0`）。
+本项目采用 **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International**（SPDX：`CC-BY-NC-SA-4.0`）。
 
 - 允许：个人学习、研究、测试、非商业自用和修改
 - 禁止：商业使用、收费部署、商业产品集成、企业生产环境使用
 - 商业授权：需事先取得作者书面授权，通过仓库 Issue 联系
 - 这不是 AGPL；README 以前写成 AGPL 是错误的，已删除
 
-完整条款见 [LICENSE](LICENSE)。
+完整法律条款见 [LICENSE](LICENSE)。
 
 ## 说明
 
