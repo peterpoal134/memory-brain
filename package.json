@@ -1,0 +1,105 @@
+{
+  "name": "dsh-memory-brain",
+  "version": "0.2.0-alpha.16",
+  "type": "module",
+  "description": "Memory Brain: standalone evidence-first memory kernel, DSH adapter and local 3D control panel",
+  "license": "AGPL-3.0-only",
+  "main": "./adapters/dsh/memory-brain.mjs",
+  "icon": "./xiaojiu_brain/static/icons/brain.svg",
+  "exports": {
+    ".": "./adapters/dsh/memory-brain.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-agent-loop": "*",
+    "@deepseek-ai/dsh-llm": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent-loop": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    }
+  },
+  "files": [
+    "adapters/dsh/*.mjs",
+    "adapters/dsh/*.md",
+    "adapters/dsh/package.json",
+    "xiaojiu_brain/*.py",
+    "xiaojiu_brain/static/*.html",
+    "xiaojiu_brain/static/*.css",
+    "xiaojiu_brain/static/*.js",
+    "xiaojiu_brain/static/*.svg",
+    "xiaojiu_brain/static/icons/*.svg",
+    "xiaojiu_brain/static/icons/*.md",
+    "xiaojiu_brain/static/cortex/*.bin",
+    "xiaojiu_brain/static/cortex/*.json",
+    "xiaojiu_brain/static/cortex/*.md",
+    "xiaojiu_brain/static/vendor/*.md",
+    "wheels/*.whl",
+    "docs/DSH-INSTALL.md",
+    "docs/DSH-DESKTOP-COMPAT.md",
+    "docs/BACKGROUND-DERIVATION.md",
+    "docs/BRANDING.md",
+    "docs/CONTRACT.md",
+    "docs/DAILY-STATE-RULES.md",
+    "docs/LIFE-LAYER.md",
+    "docs/MEMORY-MAP.md",
+    "docs/OBSERVATORY-API.md",
+    "docs/PROFILE-IMPORTANT.md",
+    "docs/SEMANTIC-MEMORY.md",
+    "docs/TIME-SEMANTICS.md",
+    "frontend/brain/*.js",
+    "frontend/*.json",
+    "frontend/README.md",
+    "tests/*.py",
+    "tests/*.mjs",
+    "tests/integration/*.py",
+    "tests/integration/*.mjs",
+    "scripts/install.ps1",
+    "scripts/start-local.ps1",
+    "scripts/open-panel.ps1",
+    "scripts/connect-dsh.ps1",
+    "scripts/register-dsh.mjs",
+    "scripts/verify-package.ps1",
+    "scripts/build_brain.mjs",
+    "scripts/build_fallback.py",
+    "scripts/build_plugin_release.py",
+    "scripts/build_release.py",
+    "scripts/dsh_plan.py",
+    "cordis.patch.yml",
+    "pyproject.toml",
+    "MANIFEST.in",
+    "LICENSE",
+    "NOTICE.md",
+    "README.md",
+    "SHA256SUMS.json",
+    "PUBLIC-RELEASE.json",
+    "*.cmd",
+    "compat/*.json",
+    "compat/*.patch",
+    "scripts/dsh-request-hook.mjs",
+    "scripts/dsh-compat.ps1",
+    "gitignore.template",
+    "scripts/__init__.py",
+    "scripts/verify_migration.py"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "name": "Memory Brain",
+  "display_name": "忆核大脑",
+  "version": "0.2.0a16",
+  "build_id": "c70be976ffbd88e9",
+  "created_at": "2026-11-08T12:13:19.399793+00:00",
+  "platform": "Windows 10/11",
+  "python": ">=3.10",
+  "node": ">=22",
+  "entry": "adapters/dsh/memory-brain.mjs",
+  "dsh_contract": "request-only snapshots via native host contract or verified stock per-agent compatibility bridge",
+  "contains": [
+    "kernel_source",
+    "kernel_wheel",
+    "DSH_adapter",
+    "DSH_bundle_manifest",
+    "3D_panel",
+    "life_and_emotion_rules",
+    "synthetic_tests",
+    "licenses"
+  ],
+  "excludes": [
+    "private_config",
+    "API_keys",
+    "persona_content",
+    "chat_history",
+    "memory_databases",
+    "queue_logs",
+    "private_reports",
+    "model_weights",
+    "DSH_runtime"
+  ],
+  "fresh_install": true,
+  "default_owner": "local-owner",
+  "default_cross_conversation": false,
+  "dependencies_downloaded_by_installer": [
+    "numpy",
+    "tzdata_on_windows"
+  ]
+}

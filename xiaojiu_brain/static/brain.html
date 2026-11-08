@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>忆核大脑 Memory Brain · 3D 观测台</title>
+  <link rel="stylesheet" href="/static/brain.css">
+  <script type="module" src="/static/brain.js"></script>
+</head>
+<body>
+<main id="brain-app" class="brain-app">
+  <header class="brain-header">
+    <a class="brain-brand" href="/brain" aria-label="忆核大脑首页">
+      <span class="brand-symbol"><img src="/static/icons/brain.svg" alt="" width="30" height="30"></span>
+      <span><strong>忆核大脑</strong><small>MEMORY BRAIN</small></span>
+    </a>
+    <div class="connection live" aria-live="polite">
+      <span class="connection-dot" aria-hidden="true"></span>
+      <div><b id="connection-state">等待本机服务</b><small id="connection-detail">正在读取实际状态</small></div>
+    </div>
+    <nav class="header-actions" aria-label="页面入口">
+      <button id="help-toggle" class="button quiet" type="button" aria-label="图示说明"><img src="/static/icons/shield-check.svg" alt="" width="17" height="17"><span>图示说明</span></button>
+      <a class="button panel-link" href="/panel"><img src="/static/icons/settings-2.svg" alt="" width="17" height="17"><span>控制面板</span><img src="/static/icons/arrow-up-right.svg" alt="" width="15" height="15"></a>
+    </nav>
+  </header>
+
+  <div class="brain-layout">
+    <section class="brain-stage" aria-label="可旋转的三维脑形模型">
+      <canvas id="brain-canvas" tabindex="0" aria-label="三维皮层模型，拖拽旋转、滚轮缩放，悬停预览真实记忆">当前浏览器无法显示三维画布。你仍可打开控制面板管理记忆。</canvas>
+      <img class="brain-fallback" src="/static/brain-fallback.svg" alt="由已署名皮层网格生成的金紫静态投影，非实时记忆或神经活动">
+      <div class="stage-kicker" aria-hidden="true"><span></span> MEMORY CORTEX <span></span></div>
+      <div id="model-loading" class="model-loading" role="status">正在载入原脑形模型…</div>
+      <p class="stage-hint">悬停看记忆 <i></i> 点击看出处 <i></i> 拖拽旋转</p>
+      <p class="static-note">静态展示 · 不是实时神经活动</p>
+    </section>
+
+    <aside class="brain-left" aria-label="记忆功能区">
+      <div class="intro-copy">
+        <p class="eyebrow">LOCAL MEMORY CORE</p>
+        <h1>每一段记忆，<br>都能找到来处。</h1>
+        <p class="intro-note">原话、派生索引与后台状态，<br>在同一颗大脑里清楚呈现。</p>
+      </div>
+      <dl class="core-metrics" aria-label="实际服务计数">
+        <div><dt>对话原话</dt><dd id="metric-messages">—</dd></div>
+        <div><dt>派生事实索引</dt><dd id="metric-facts">—</dd></div>
+        <div><dt>向量索引</dt><dd id="metric-vectors">—</dd></div>
+      </dl>
+      <section class="memory-browser" aria-label="皮层记忆筛选">
+        <div class="section-heading"><h2>皮层里的记忆</h2><span>LIVE MEMORIES</span></div>
+        <div class="memory-filter-row"><label for="memory-days">时间范围<select id="memory-days"><option value="7">最近7天</option><option value="30" selected>最近30天</option><option value="90">最近90天</option><option value="all">全部时间</option></select></label><label for="memory-kind">记忆类型<select id="memory-kind"><option value="memories">事实与摘要</option><option value="fact">事实</option><option value="summary">摘要</option><option value="raw">原话与笔记</option><option value="all">全部类型</option></select></label></div>
+        <label class="domain-search" for="node-search"><img src="/static/icons/search.svg" alt="" width="17" height="17"><input id="node-search" type="search" placeholder="筛选已加载记忆" autocomplete="off" maxlength="100"></label>
+        <p id="memory-map-status" class="memory-map-status" role="status">登录后读取真实记忆。</p>
+        <div class="memory-map-actions"><button id="reload-memories" type="button">刷新记忆</button><button id="load-more-memories" type="button" hidden>加载更多</button></div>
+        <div class="memory-legend" aria-label="记忆颜色"><span><i class="legend-fact"></i>事实</span><span><i class="legend-summary"></i>摘要</span><span><i class="legend-raw"></i>原话/笔记</span></div>
+      </section>
+      <details class="function-navigation"><summary>功能与管理入口</summary><div id="domain-list" class="domain-list"><p class="empty-note">读取状态后显示管理入口。</p></div></details>
+      <p class="source-note"><img src="/static/icons/database.svg" alt="" width="14" height="14">亮点对应实际记忆索引，最多加载600条。落点是显示布局，不代表真实脑区；光纤为装饰。</p>
+    </aside>
+
+    <aside class="brain-right" aria-label="功能区观测台">
+      <section class="selected-node" aria-live="polite">
+        <p class="eyebrow">SELECTED MEMORY / 记忆详情</p>
+        <h2 id="node-title">在皮层上选择一条记忆</h2>
+        <div class="selected-count"><strong id="node-count">—</strong><span id="node-unit">等待服务数据</span></div>
+        <p id="node-description">鼠标移到发光点上查看真实内容片段，点击后在这里展开。</p>
+        <p id="memory-meta" class="memory-meta"></p>
+        <button id="memory-expand" class="memory-expand" type="button" hidden>展开完整记忆</button>
+        <div id="memory-sources" class="memory-sources"></div>
+        <a id="node-open" class="node-open" href="/panel">在控制面板查看 <img src="/static/icons/arrow-up-right.svg" alt="" width="16" height="16"></a>
+      </section>
+
+      <section id="work-activity" class="work-activity" data-state="unavailable" aria-label="记忆工作活动">
+        <div class="work-heading"><span><i aria-hidden="true"></i>工作脉冲</span><b id="work-state" aria-live="polite">活动状态未读取</b></div>
+        <svg class="work-wave" viewBox="0 0 300 44" aria-hidden="true"><path class="wave-baseline" d="M0 22H300"/><path id="work-wave-path" d="M0 22H300"/></svg>
+        <p id="work-detail">等待记忆服务状态</p>
+        <small>依据检索与后台任务 · 视觉示意</small>
+      </section>
+      <div class="inspector-tabs" role="tablist" aria-label="观测内容">
+        <button type="button" role="tab" data-tab="state" class="active" aria-selected="true" aria-controls="tab-state">运行</button>
+        <button type="button" role="tab" data-tab="life" aria-selected="false" aria-controls="tab-life">生活与情绪</button>
+        <button type="button" role="tab" data-tab="usage" aria-selected="false" aria-controls="tab-usage">后台用量</button>
+      </div>
+      <section id="tab-state" class="inspector-content" role="tabpanel">
+        <div class="section-heading"><h3>原话到检索的链路</h3><img src="/static/icons/activity.svg" alt="" width="17" height="17"></div>
+        <div id="pipeline-list" class="pipeline-list"><p class="empty-note">尚未返回链路状态。</p></div>
+        <div class="policy-block"><h3>使用边界</h3><div id="policy-summary">等待服务设置；不以画面光效推断功能已开启。</div></div>
+      </section>
+      <section id="tab-life" class="inspector-content" role="tabpanel" hidden>
+        <div class="section-heading"><h3>规则生活状态</h3><span class="signal-tag">模拟</span></div>
+        <p id="life-mode" class="empty-note">尚未返回生活状态。</p>
+        <div id="life-signals" class="signal-list"></div>
+        <div class="section-heading pad-heading"><h3>PAD 情绪信号</h3><img src="/static/icons/heart-pulse.svg" alt="" width="17" height="17"></div>
+        <div id="pad-signals" class="signal-list"><p class="empty-note">尚未返回情绪信号。</p></div>
+        <p class="source-note">规则与用户管理的信号，不是模型真实感受，不作为用户事实的证据。</p>
+      </section>
+      <section id="tab-usage" class="inspector-content" role="tabpanel" hidden>
+        <p id="usage-scope" class="usage-scope">仅后台整理，不含主聊天、嵌入或测评；未知用量不当作 0。</p>
+        <dl class="usage-metrics">
+          <div><dt>已报告输入 tokens</dt><dd id="usage-input">—</dd></div>
+          <div><dt>已报告输出 tokens</dt><dd id="usage-output">—</dd></div>
+          <div><dt>已报告输入的缓存命中率</dt><dd id="usage-cache">—</dd></div>
+          <div><dt>整理尝试</dt><dd id="usage-calls">—</dd></div>
+          <div><dt>用量未知的尝试</dt><dd id="usage-unknown">—</dd></div>
+        </dl>
+        <p class="source-note">这里只显示服务已记录的用量，不估金额；缺少记录不代表没有消费。</p>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="brain-footer">
+    <div class="footer-status"><span id="last-sync">尚未同步</span><p id="layout-note">亮点是真实记录，落点为示意；光纤为装饰。</p></div>
+    <div class="scene-toolbar" role="toolbar" aria-label="三维视图控制">
+      <button id="motion-toggle" type="button" aria-pressed="false"><img src="/static/icons/pause.svg" alt="" width="16" height="16"><span>暂停光效</span></button>
+      <button id="auto-rotate-toggle" type="button" aria-pressed="false">暂停自转</button>
+      <button id="rotate-view" type="button"><img src="/static/icons/orbit.svg" alt="" width="16" height="16"><span>转动视角</span></button>
+      <button id="reset-view" type="button"><img src="/static/icons/rotate-ccw.svg" alt="" width="16" height="16"><span>重置</span></button>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <button id="settings-toggle" type="button" aria-controls="visual-settings" aria-expanded="false"><img src="/static/icons/settings-2.svg" alt="" width="16" height="16"><span>视觉设置</span></button>
+      <button id="cinema-toggle" type="button"><img src="/static/icons/maximize.svg" alt="" width="16" height="16"><span>沉浸</span></button>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <button id="reload-data" type="button"><img src="/static/icons/radio.svg" alt="" width="16" height="16"><span>刷新状态</span></button>
+      <button id="logout" type="button"><img src="/static/icons/log-out.svg" alt="" width="16" height="16"><span>退出登录</span></button>
+    </div>
+  </footer>
+</main>
+
+<div id="node-tooltip" class="node-tooltip" role="tooltip"></div>
+<section id="visual-settings" class="visual-settings" aria-label="视觉设置" hidden>
+  <div class="section-heading"><h2>视觉设置</h2><span>VIEW ONLY</span></div>
+  <label for="glow-slider">节点光效<input id="glow-slider" type="range" min="0" max="100" value="55"></label>
+  <label for="density-slider" hidden>示意连线密度<input id="density-slider" type="range" min="0" max="100" value="32"></label>
+  <label class="art-check" for="auto-rotate"><span>缓慢自动旋转</span><input id="auto-rotate" type="checkbox" checked></label>
+  <label class="direction-control" for="rotation-direction">旋转方向<select id="rotation-direction"><option value="cw">顺时针</option><option value="ccw">逆时针</option></select></label>
+  <label for="rotation-speed">自转速度 <output id="rotation-period">约 140 秒一圈</output><input id="rotation-speed" type="range" min="1" max="5" value="2" step="1"></label>
+  <label class="art-check" for="art-toggle"><span>舞台光环与装饰</span><input id="art-toggle" type="checkbox" checked></label>
+  <p>仅改变显示，不修改记忆、检索或权重。再次点击“视觉设置”可收起。</p>
+</section>
+<button id="cinema-exit" class="cinema-exit" type="button" hidden><img src="/static/icons/arrow-left.svg" alt="" width="17" height="17">退出沉浸</button>
+
+<dialog id="help-dialog" class="help-dialog" aria-labelledby="help-title">
+  <div class="dialog-heading"><h2 id="help-title">怎样阅读这颗大脑</h2><button id="close-help" class="button quiet" type="button">关闭</button></div>
+  <p>脑体使用可旋转的皮层网格和装饰光纤，是只读模型图形，不是神经测量或用户真实脑区。</p>
+  <p>皮层亮点来自当前账号真实记忆索引：事实、摘要或原话片段。颜色按类型区分，悬停看原存内容片段，点击看详情和来源，不额外生成摘要。受限记忆只显示占位。光纤与舞台是装饰，不计作记忆。</p>
+  <p>默认按原记录时间查看最近30天，可切换时间和类型；导入笔记不等于已核实原话，记录时间不自动等于事件发生时间。分页最多加载600个点，显示的条数不是全库总数。位置按记录ID稳定分布，既不是脑区测量，也不是语义关系。</p>
+  <p>悬停或拖拽时暂停自转，移开后恢复；可在视觉设置中选择方向和速度。顺逆方向以从脑体顶部俯视为准。</p>
+  <p>工作脉冲根据记忆服务实际检索、整理与索引任务触发，待机时回到平线；它不是脑电、心率或思考强度测量。主聊天生成状态尚未接入，不把记忆服务空闲当成聊天没有在工作。</p>
+  <p>登录后可查看当前账号的普通记忆；来源窗口只展示所引片段，受限内容保持隐藏。生活与 PAD 是明确标记的规则或用户管理信号，不表示模型有真实感受。</p>
+  <p>后台用量只覆盖已记录的整理调用，不含主聊天，未知不当零。视觉亮度不表示模型能力或记忆质量。</p>
+  <p class="attribution">皮层模型：Anderson Winkler · CC BY-SA 3.0。原网格与衍生光纤的署名、许可和修改说明随模型资源保留。</p>
+</dialog>
+<dialog id="memory-source-dialog" class="help-dialog" aria-labelledby="memory-source-title"><div class="dialog-heading"><h2 id="memory-source-title">来源记录</h2><button id="close-memory-source" class="button quiet" type="button">关闭</button></div><div id="memory-source-content" class="memory-source-content"></div></dialog>
+
+<section id="login-overlay" class="login-overlay" aria-label="登录本机记忆服务" hidden>
+  <form id="login-form" class="login-card">
+    <img class="login-symbol" src="/static/icons/brain.svg" alt="" width="42" height="42">
+    <span class="eyebrow">MEMORY BRAIN</span><h1>忆核大脑</h1>
+    <p>从桌面“忆核大脑”打开一次，之后此浏览器自动进入。</p>
+    <small>浏览器可信登录保留 30 天；刷新、新标签页和服务重启后无需重复输入。退出管理会撤销本浏览器的登录。</small>
+    <button id="login-retry" class="button primary" type="button">重新检查</button>
+    <details id="manual-login">
+      <summary>高级：手动输入管理口令</summary>
+      <label for="management-token">本机管理口令<input id="management-token" name="management-token" type="password" required autocomplete="off" placeholder="输入安装时生成的管理口令"></label>
+      <small>不是模型 API Key。验证后只保留浏览器登录凭证，不在网页存储明文管理口令。</small>
+      <button class="button primary" type="submit">手动登录</button>
+    </details>
+    <p id="login-error" class="login-error" role="alert"></p>
+  </form>
+</section>
+</body>
+</html>

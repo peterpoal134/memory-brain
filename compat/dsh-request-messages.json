@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "compat_id": "dsh-request-messages-0.2.1-rc.5",
+  "package": {
+    "name": "@deepseek-ai/dsh-agent-loop",
+    "version": "0.2.1-rc.5"
+  },
+  "target": "node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js",
+  "before_sha256": "cf57e3ecd487ac5c2553455aaa5cef2c6fb41e6bd61be5aa455675d1d7193033",
+  "after_sha256": "05da9a39de1e0109861423eb3617a9cdcfb7fb8cc822feb455337c1f333098f8",
+  "newline_policy": {
+    "before": "LF",
+    "after": "CRLF"
+  },
+  "license": {
+    "spdx": "MIT",
+    "copyright": "Copyright (c) 2026 DeepSeek",
+    "notice": "MIT License\n\nCopyright (c) 2026 DeepSeek\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n"
+  },
+  "scope_note": "Only these two exact built-file hashes are supported. Two narrow replacements and the declared CRLF output reproduce the known patched build byte-for-byte. No complete DSH source is included; this does not assert compatibility with every build of this version.",
+  "changes": [
+    {
+      "id": "request_snapshot_consumption",
+      "before": "\t\t\tconst request = this.buildRequest(config, preparedCall, assembly.tools, {\n\t\t\t\tturn,\n\t\t\t\tstep\n\t\t\t}, startsRequestSeries, signal);",
+      "after": "\t\t\tconst request = this.withRequestMessages(this.buildRequest(config, preparedCall, assembly.tools, {\n\t\t\t\tturn,\n\t\t\t\tstep\n\t\t\t}, startsRequestSeries, signal), decision.requestMessages);",
+      "count": 1
+    },
+    {
+      "id": "request_snapshot_helper",
+      "before": "\t\t\tsignal\n\t\t}));\n\t}\n};\n//#endregion\n//#region lib/types/constants.js",
+      "after": "\t\t\tsignal\n\t\t}));\n\t}\n\t/**\n\t* Merge request-only messages declared by an `agent/pre-step` handler.\n\t*\n\t* The contract is narrow on purpose: entries are plain strings, become user\n\t* messages with a plugin source, and are merged into this request snapshot\n\t* only. Nothing is appended to the session, so a later request cannot replay\n\t* them.\n\t*/\n\twithRequestMessages(request, messages) {\n\t\tif (!Array.isArray(messages) || messages.length === 0) return request;\n\t\tconst transient = messages.filter((message) => typeof message === \"string\" && message.trim().length > 0).map((text) => createUserMessage({\n\t\t\tcontent: [{\n\t\t\t\ttype: \"text\",\n\t\t\t\ttext\n\t\t\t}],\n\t\t\tsource: {\n\t\t\t\tkind: \"plugin\",\n\t\t\t\tform: \"snapshot\"\n\t\t\t}\n\t\t}));\n\t\tif (transient.length === 0) return request;\n\t\treturn markAgentLoopRequest(Object.freeze({\n\t\t\t...request,\n\t\t\tmessages: Object.freeze([...request.messages, ...transient])\n\t\t}));\n\t}\n};\n//#endregion\n//#region lib/types/constants.js",
+      "count": 1
+    }
+  ]
+}

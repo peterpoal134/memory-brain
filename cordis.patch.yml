@@ -1,0 +1,9 @@
+# DSH Plugin Manager bundle entry. Initialize Python with the installer first.
+# Use this bundle OR the connection launcher, never both for one profile.
+- insert:
+    - id: memory-brain
+      name: ./adapters/dsh/memory-brain.mjs
+      config:
+        enabled: true
+        autoStart: true
+        queueNamespace: default

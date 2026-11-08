@@ -1,0 +1,54 @@
+DSH request-only snapshot compatibility patch.
+Copyright (c) 2026 DeepSeek; licensed under the MIT License.
+The complete MIT notice is included in dsh-request-messages.json.
+Only the exact SHA256 pair in that manifest is supported.
+The application script also applies the manifest CRLF output policy.
+
+--- a/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js
++++ b/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js
+@@ -1072,10 +1072,10 @@
+ 			} else this.session.append("user/message", message, { surfaceOp: "append" });
+ 			if (context !== void 0 && !contextAdmitted) this.session.append("user/message", context, { surfaceOp: "append" });
+ 			firstAttempt = false;
+-			const request = this.buildRequest(config, preparedCall, assembly.tools, {
++			const request = this.withRequestMessages(this.buildRequest(config, preparedCall, assembly.tools, {
+ 				turn,
+ 				step
+-			}, startsRequestSeries, signal);
++			}, startsRequestSeries, signal), decision.requestMessages);
+ 			const live = new AssistantStreamAttempt(this.session.id, ++this.assistantAttemptCounter, () => ++this.assistantStreamRevision, turn, step, (frame) => {
+ 				this.dispatch.emit("agent/assistant-stream", { frame });
+ 			});
+@@ -1285,6 +1285,32 @@
+ 			...header.tools !== void 0 ? { tools: header.tools } : {},
+ 			sessionId: this.session.id,
+ 			signal
++		}));
++	}
++	/**
++	* Merge request-only messages declared by an `agent/pre-step` handler.
++	*
++	* The contract is narrow on purpose: entries are plain strings, become user
++	* messages with a plugin source, and are merged into this request snapshot
++	* only. Nothing is appended to the session, so a later request cannot replay
++	* them.
++	*/
++	withRequestMessages(request, messages) {
++		if (!Array.isArray(messages) || messages.length === 0) return request;
++		const transient = messages.filter((message) => typeof message === "string" && message.trim().length > 0).map((text) => createUserMessage({
++			content: [{
++				type: "text",
++				text
++			}],
++			source: {
++				kind: "plugin",
++				form: "snapshot"
++			}
++		}));
++		if (transient.length === 0) return request;
++		return markAgentLoopRequest(Object.freeze({
++			...request,
++			messages: Object.freeze([...request.messages, ...transient])
+ 		}));
+ 	}
+ };
