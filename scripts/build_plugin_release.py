@@ -8,10 +8,10 @@ import argparse,ast,datetime,hashlib,io,json,os,platform,re,runpy,shutil,subproc
 
 PUBLIC_DOCS=('BACKGROUND-DERIVATION.md','BRANDING.md','CONTRACT.md','DAILY-STATE-RULES.md',
     'LIFE-LAYER.md','MEMORY-MAP.md','OBSERVATORY-API.md','PROFILE-IMPORTANT.md','DSH-INSTALL.md',
-    'SEMANTIC-MEMORY.md','TIME-SEMANTICS.md','DSH-DESKTOP-COMPAT.md')
+    'SEMANTIC-MEMORY.md','TIME-SEMANTICS.md','DSH-DESKTOP-COMPAT.md','DSH-FIRST-RUN.md')
 PUBLIC_SCRIPTS=('install.ps1','start-local.ps1','open-panel.ps1','connect-dsh.ps1','register-dsh.mjs',
     'verify-package.ps1','build_brain.mjs','build_fallback.py','build_plugin_release.py','build_release.py','dsh_plan.py',
-    'dsh-request-hook.mjs','dsh-compat.ps1','__init__.py','verify_migration.py')
+    'dsh-request-hook.mjs','dsh-compat.ps1','__init__.py','verify_migration.py','build_runtime_wheel.py','dsh-compat-report.mjs')
 ROOT_FILES=('README.md','LICENSE','NOTICE.md','pyproject.toml','MANIFEST.in','gitignore.template','package.json','cordis.patch.yml',
     'install.cmd','open-panel.cmd','stop-brain.cmd','connect-dsh.cmd','remove-dsh.cmd','dsh-compat-check.cmd')
 FORBIDDEN_NAMES={'private','data','artifacts','dist','node_modules','.venv','__pycache__','.git'}
@@ -23,8 +23,18 @@ def public_sources(root):
     files.update(root/'docs'/name for name in PUBLIC_DOCS)
     files.update(root/'scripts'/name for name in PUBLIC_SCRIPTS)
     files.update(root/'compat'/name for name in ('dsh-request-messages.json','dsh-request-messages.patch'))
+    dependency_manifest=root/'compat/runtime-dependencies.json'
+    dependencies=json.loads(dependency_manifest.read_text('utf8'))
+    if dependencies.get('format')!=1 or len(dependencies.get('files',[]))!=1:raise RuntimeError('Unexpected bundled runtime dependencies')
+    files.add(dependency_manifest)
+    for entry in dependencies['files']:
+        name=entry.get('filename','')
+        if name!='tzdata-2026.6-py2.py3-none-any.whl':raise RuntimeError('Unexpected bundled dependency filename')
+        wheel=root/'wheels'/name
+        if wheel.is_symlink() or hashlib.sha256(wheel.read_bytes()).hexdigest()!=entry.get('sha256'):raise RuntimeError('Bundled dependency checksum mismatch')
+        files.add(wheel)
     for directory,extensions in [('xiaojiu_brain',{'.py','.html','.css','.js','.svg','.bin','.json','.md'}),
-        ('adapters/dsh',{'.mjs','.md','.json'}),('tests',{'.py','.mjs'}),('frontend',{'.js','.json','.md'})]:
+        ('adapters/dsh',{'.mjs','.md','.json'}),('client',{'.js'}),('tests',{'.py','.mjs'}),('frontend',{'.js','.json','.md'})]:
         for p in (root/directory).rglob('*'):
             if p.is_file() and p.suffix in extensions and not any(part in FORBIDDEN_NAMES or part.startswith('run-') for part in p.relative_to(root).parts):files.add(p)
     missing=[p.relative_to(root).as_posix() for p in files if not p.is_file()]
@@ -120,20 +130,24 @@ def build(root,output,test_python=None):
     global LOCAL_IDENTIFIERS
     root=Path(root).resolve();output=Path(output).resolve();output.mkdir(parents=True,exist_ok=True)
     LOCAL_IDENTIFIERS=local_identifiers(root)
-    version=runpy.run_path(str(root/'xiaojiu_brain/__init__.py'))['__version__']
+    kernel_version=runpy.run_path(str(root/'xiaojiu_brain/__init__.py'))['__version__']
+    plugin_version=json.loads((root/'package.json').read_text('utf-8-sig'))['version']
+    release_match=re.fullmatch(r'(\d+\.\d+\.\d+)-alpha\.(\d+)',plugin_version)
+    if not release_match:raise RuntimeError('Expected an explicit alpha plugin release version')
+    version=release_match[1]+'a'+release_match[2]
     work=root/'artifacts/public-plugin-package';work.mkdir(parents=True,exist_ok=True)
     stage=Path(tempfile.mkdtemp(prefix='stage-',dir=work));secrets=known_secrets(root)
     selected=public_sources(root)
     for source in selected:
         relative=source.relative_to(root);blob=source.read_bytes();validate_content(relative.as_posix(),blob,secrets)
         dest=stage/relative;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(blob)
-    wheels=stage/'wheels';wheels.mkdir()
+    wheels=stage/'wheels';wheels.mkdir(exist_ok=True)
     env=os.environ.copy();env.update(PIP_DISABLE_PIP_VERSION_CHECK='1',PYTHONUTF8='1')
     result=subprocess.run([sys.executable,'-m','pip','wheel','--no-deps','--no-index','--no-build-isolation',
         '--no-cache-dir','--wheel-dir',str(wheels),str(stage)],cwd=work,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
     (work/'wheel-build.log').write_bytes(result.stdout)
     if result.returncode:raise RuntimeError('Public wheel build failed; see local wheel-build.log')
-    artifacts=list(wheels.glob('xiaojiu_brain-'+version+'-*.whl'))
+    artifacts=list(wheels.glob('xiaojiu_brain-'+kernel_version+'-*.whl'))
     if len(artifacts)!=1:raise RuntimeError('Expected exactly one kernel wheel')
     wheel=artifacts[0];validate_content('wheels/'+wheel.name,wheel.read_bytes(),secrets)
     # Check all package/static members against the same selected source stage.
@@ -147,14 +161,17 @@ def build(root,output,test_python=None):
     sys.modules[spec.name]=module;spec.loader.exec_module(module)
     manifest={p.relative_to(root).as_posix():sha(stage/p.relative_to(root)) for p in selected}
     manifest['wheels/'+wheel.name]=sha(wheel)
-    info={'name':'Memory Brain','display_name':'忆核大脑','version':version,'build_id':module.build_id(),
+    info={'name':'Memory Brain','display_name':'忆核大脑','version':version,'plugin_version':plugin_version,
+        'kernel_version':kernel_version,'build_id':module.build_id(),
         'created_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':'Windows 10/11',
         'python':'>=3.10','node':'>=22','entry':'adapters/dsh/memory-brain.mjs',
         'dsh_contract':'request-only snapshots via native host contract or verified stock per-agent compatibility bridge',
         'contains':['kernel_source','kernel_wheel','DSH_adapter','DSH_bundle_manifest','3D_panel','life_and_emotion_rules','synthetic_tests','licenses'],
         'excludes':['private_config','API_keys','persona_content','chat_history','memory_databases','queue_logs','private_reports','model_weights','DSH_runtime'],
         'fresh_install':True,'default_owner':'local-owner','default_cross_conversation':False,
-        'dependencies_downloaded_by_installer':['numpy','tzdata_on_windows']}
+        'dependencies_downloaded_by_installer':[],
+        'bundled_runtime_dependencies':['tzdata-2026.6-py2.py3-none-any.whl'],
+        'first_run_network_required':False,'python_must_already_be_installed':True}
     (stage/'PUBLIC-RELEASE.json').write_text(json.dumps(info,ensure_ascii=False,indent=2),encoding='utf8')
     manifest['PUBLIC-RELEASE.json']=sha(stage/'PUBLIC-RELEASE.json')
     (stage/'SHA256SUMS.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf8')
@@ -164,7 +181,7 @@ def build(root,output,test_python=None):
         for name in sorted([*manifest,'SHA256SUMS.json']):z.write(stage/name,prefix+'/'+name)
     with zipfile.ZipFile(archive) as z:
         for name in z.namelist():validate_content(name,z.read(name),secrets)
-        for required in ('package.json','cordis.patch.yml','adapters/dsh/memory-brain.mjs','scripts/register-dsh.mjs','docs/DSH-INSTALL.md','xiaojiu_brain/static/brain-fallback.svg'):
+        for required in ('package.json','cordis.patch.yml','adapters/dsh/memory-brain.mjs','adapters/dsh/onboarding.mjs','adapters/dsh/runtime-home.mjs','client/client.js','scripts/build_runtime_wheel.py','scripts/register-dsh.mjs','docs/DSH-INSTALL.md','docs/DSH-FIRST-RUN.md','xiaojiu_brain/static/brain-fallback.svg'):
             if prefix+'/'+required not in z.namelist():raise RuntimeError('Release missing '+required)
     test_result=verify_extracted_archive(archive,work,test_python or sys.executable)
     # Publish only after both privacy and archive-sourced tests pass.

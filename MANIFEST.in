@@ -6,9 +6,11 @@ recursive-include docs *.md
 recursive-include scripts *.py *.ps1 *.mjs
 recursive-include tests *.py *.mjs
 recursive-include frontend *.js *.json *.md
+recursive-include client *.js
 include install.cmd open-panel.cmd stop-brain.cmd
 include connect-dsh.cmd remove-dsh.cmd
 include dsh-compat-check.cmd
 recursive-include compat *.json *.patch
+recursive-include wheels tzdata-*.whl
 exclude xiaojiu_brain/static/brain-fallback.png
 exclude docs/LIVE-CUTOVER-20261108.md docs/ACCEPTANCE.md docs/PANEL-LAUNCHER-FIX-20261108.md docs/LEGACY-PRIVATE-MAPPING.md

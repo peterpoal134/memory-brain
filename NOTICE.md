@@ -6,7 +6,9 @@
 
 新服务、证据检索、持久存储、迁移器、控制面板和 DSH 适配器在新目录编写，不导入旧题目分类器、旧检索正则或 AstrBot 插件运行时。
 
-Python/Numpy/tzdata、DSH 宿主和模型服务各自遵循其许可。本发布不打包 DSH、模型权重、私人原话、旧数据库或模型密钥。
+Python/tzdata、DSH 宿主和模型服务各自遵循其许可。本发布不打包 DSH、模型权重、私人原话、旧数据库或模型密钥。
+
+为避免首次安装依赖网络，公开包包含未修改的 `tzdata-2026.6-py2.py3-none-any.whl`（Python Software Foundation，Apache-2.0）。官方发布地址及 SHA-256 在 `compat/runtime-dependencies.json`；完整版权和许可随 wheel 内的 `dist-info/licenses/` 保留。该时区数据用于 Windows 的 IANA 时区支持，不是用户记忆。没有改写或重新打包该第三方 wheel。当前内核没有使用 NumPy，a17移除了此前遗留的 NumPy 强制依赖。
 
 ## 3D 大脑与前端资源
 

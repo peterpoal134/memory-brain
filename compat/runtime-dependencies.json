@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "files": [
+    {
+      "filename": "tzdata-2026.6-py2.py3-none-any.whl",
+      "sha256": "0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec",
+      "source": "https://files.pythonhosted.org/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl",
+      "metadata": "https://pypi.org/pypi/tzdata/2026.6/json",
+      "license": "Apache-2.0",
+      "modified": false
+    }
+  ]
+}

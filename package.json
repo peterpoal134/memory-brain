@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-brain",
-  "version": "0.2.0-alpha.16",
+  "version": "0.2.0-alpha.18",
   "type": "module",
   "description": "Memory Brain: standalone evidence-first memory kernel, DSH adapter and local 3D control panel",
   "license": "AGPL-3.0-only",
@@ -8,12 +8,16 @@
   "icon": "./xiaojiu_brain/static/icons/brain.svg",
   "exports": {
     ".": "./adapters/dsh/memory-brain.mjs",
+    "./client": "./client/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "engines": {
@@ -40,6 +44,7 @@
     }
   },
   "files": [
+    "client/*.js",
     "adapters/dsh/*.mjs",
     "adapters/dsh/*.md",
     "adapters/dsh/package.json",
@@ -57,6 +62,7 @@
     "wheels/*.whl",
     "docs/DSH-INSTALL.md",
     "docs/DSH-DESKTOP-COMPAT.md",
+    "docs/DSH-FIRST-RUN.md",
     "docs/BACKGROUND-DERIVATION.md",
     "docs/BRANDING.md",
     "docs/CONTRACT.md",
@@ -100,6 +106,8 @@
     "scripts/dsh-compat.ps1",
     "gitignore.template",
     "scripts/__init__.py",
-    "scripts/verify_migration.py"
+    "scripts/verify_migration.py",
+    "scripts/build_runtime_wheel.py",
+    "scripts/dsh-compat-report.mjs"
   ]
 }

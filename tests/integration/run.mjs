@@ -39,7 +39,17 @@ class FixtureLlm extends Service { constructor(ctx){super(ctx,'llm');} async pre
 const ctx=new Context();
 let adapter, pluginFiber;
 try {
-  new SessionProjectionRegistry(ctx);new SessionStore(ctx);new AgentRegistry(ctx);new SystemPrompt(ctx,{includeRuntimeContext:false,includeHarnessIdentity:false});new ToolRuntime(ctx);new FixtureLlm(ctx);
+  // Service classes may own asynchronous native initialization. Constructing
+  // them directly bypasses that lifecycle on newer hosts.
+  for(const [service,config] of [[SessionProjectionRegistry],[SessionStore],[AgentRegistry],
+    [SystemPrompt,{includeRuntimeContext:false,includeHarnessIdentity:false}],[ToolRuntime],[FixtureLlm]]){
+    const serviceFiber=ctx.plugin(service,config);await serviceFiber.await();assert.equal(serviceFiber.state,2,'native service class did not initialize');
+  }
+  // Newer ToolRuntime exposes explicit executor selection; use the host's real
+  // native executor. Older runtimes retain their own built-in executor.
+  if(typeof ctx.tools.setExecutor==='function'){
+    const executorFiber=ctx.plugin(await mod('dsh-tool-executor-native'));await executorFiber.await();assert.equal(executorFiber.state,2,'real native executor did not initialize');
+  }
   ctx.on('agent/error',e=>errors.push(String(e.error?.stack||e.error||e)));
   // Registered outside/before the memory middleware: its final decision must
   // win even when it changes requestMessages after the memory handler returns.
@@ -58,7 +68,8 @@ try {
   adapter=brainPlugin.getAdapter(pluginFiber.ctx);
   check('real Cordis module loading reaches active state without invalid effect',pluginFiber.state===2&&adapter?.enabled===true);
   ctx.tools.register({name:'fixture_ping',description:'Synthetic no-op tool',parameters:{type:'object',properties:{},required:[],additionalProperties:false},output:{schema:{type:'string'},render:(_args,value)=>[{type:'text',text:value}]},execute:async()=> '合成工具输出不可入库'});
-  const loop=new AgentLoop(ctx,{agents:[],maxParallelToolCalls:{get:()=>2}});
+  const loopFiber=ctx.plugin(AgentLoop,{agents:[],maxParallelToolCalls:2});await loopFiber.await();assert.equal(loopFiber.state,2,'native AgentLoop did not initialize');
+  const loop=ctx.agentLoop;
   const agent=await loop.create('isolated-loop-session',{provider:'fixture',model:'local-fake'});
   const fact=llm.createUserMessage({id:'fact-1',content:[{type:'text',text:'家长会时间确定为周日，请记住。'}],source:{kind:'user'}});
   agent.followup(fact);await agent.whenIdle();
@@ -151,4 +162,4 @@ try {
   fs.writeFileSync(path.join(runDir,'result.json'),JSON.stringify({passed:checks.length,failed:0,checks,requests:requests.length,raw_messages:all.items.length,errors,warnings:adapter.warnings,adapter_status:finalAdapterStatus,runtimeBefore,runtimeAfter:fingerprint(),runDir,production_mutations:0,real_model_calls:0},null,2));
   console.log(JSON.stringify({passed:checks.length,failed:0,runDir}));
 } catch(e){fs.writeFileSync(path.join(runDir,'failure.json'),JSON.stringify({error:e.stack,errors,requests:requests.length,pythonError},null,2));throw e;}
-finally {await adapter?.stop();try{await ctx.stop();}catch{}fakeModel.closeAllConnections();await new Promise(r=>fakeModel.close(r));python.kill();}
+finally {await adapter?.stop();try{await ctx.fiber.dispose();await ctx.fiber.await();}catch{}fakeModel.closeAllConnections();await new Promise(r=>fakeModel.close(r));python.kill();}

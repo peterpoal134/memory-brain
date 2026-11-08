@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xiaojiu-brain"
-version = "0.2.0a16"
+version = "0.2.0a17"
 description = "Memory Brain: evidence-first conversation memory with a local 3D control interface"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "tzdata>=2024.1; platform_system == 'Windows'"]
+dependencies = ["tzdata>=2024.1; platform_system == 'Windows'"]
 license = {file = "LICENSE"}
 readme = "README.md"
 

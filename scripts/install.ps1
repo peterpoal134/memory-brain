@@ -28,7 +28,21 @@ if ($bundled.Count -gt 1) { throw 'Multiple kernel wheels found; use an intact r
 $installSource = $projectRoot
 if ($bundled.Count -eq 1) { $installSource = $bundled[0].FullName }
 $pipArgs = @('-m', 'pip', 'install', '--no-cache-dir')
-if ($Offline) { $pipArgs += @('--no-index', '--find-links', $wheelDir) }
+$dependencyManifest = Join-Path $projectRoot 'compat\runtime-dependencies.json'
+$bundledDependencies = $false
+if (Test-Path -LiteralPath $dependencyManifest) {
+  $dependencies = Get-Content -LiteralPath $dependencyManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($dependencies.format -ne 1 -or @($dependencies.files).Count -ne 1) { throw 'Invalid runtime dependency manifest.' }
+  foreach ($dependency in $dependencies.files) {
+    if ($dependency.filename -ne 'tzdata-2026.6-py2.py3-none-any.whl') { throw 'Unknown bundled runtime dependency.' }
+    $dependencyFile = Join-Path $wheelDir $dependency.filename
+    if (-not (Test-Path -LiteralPath $dependencyFile) -or (Get-FileHash -LiteralPath $dependencyFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $dependency.sha256) {
+      throw 'Bundled runtime dependency checksum mismatch.'
+    }
+  }
+  $bundledDependencies = $true
+}
+if ($Offline -or ($bundled.Count -eq 1 -and $bundledDependencies)) { $pipArgs += @('--no-index', '--find-links', $wheelDir) }
 $pipArgs += $installSource
 & $python @pipArgs
 if ($LASTEXITCODE -ne 0) { throw 'Package installation failed.' }

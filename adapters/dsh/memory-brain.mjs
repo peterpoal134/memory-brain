@@ -8,18 +8,23 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { createHash } from 'node:crypto';
 import { createAdapter, getAdapter } from './xiaojiu-brain.mjs';
-import { createRequestBridge, STOCK_LOOP_SHA256 } from './request-bridge.mjs';
+import { createRequestBridge } from './request-bridge.mjs';
+import { probeRuntime } from './host-compat.mjs';
+import { createRuntimeManager, resolveRuntimeHome } from './runtime-home.mjs';
+import { createOnboarding, mountOnboarding } from './onboarding.mjs';
 
 export const name = 'memory-brain';
 export const inject = [];
 export { getAdapter };
 const execute = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const onboarding = new WeakMap();
+export const getOnboarding = ctx => onboarding.get(ctx);
 
-export function discoverRuntime() {
-  if (process.env.XIAOJIU_DSH_RUNTIME) return inspectRuntime(path.resolve(process.env.XIAOJIU_DSH_RUNTIME));
+export function discoverRuntime({allowUnverified=false}={}) {
+  const inspect=allowUnverified?probeRuntime:inspectRuntime;
+  if (process.env.XIAOJIU_DSH_RUNTIME) return inspect(path.resolve(process.env.XIAOJIU_DSH_RUNTIME));
   const anchors = [process.argv[1], fileURLToPath(import.meta.url), path.join(process.cwd(), 'package.json')];
   for (const anchor of anchors) {
     if (!anchor || !path.isAbsolute(anchor)) continue;
@@ -28,26 +33,21 @@ export function discoverRuntime() {
     // Resolve only from the host's own module search scope; never scan disks or
     // silently download a second copy of the DSH runtime.
     const candidate = path.resolve(path.dirname(loop), '../../../..');
-    if (fs.existsSync(path.join(candidate, 'node_modules/@deepseek-ai/dsh-session/lib/index.js'))) return inspectRuntime(candidate);
+    if (fs.existsSync(path.join(candidate, 'node_modules/@deepseek-ai/dsh-session/lib/index.js'))) return inspect(candidate);
+  }
+  if(allowUnverified){
+    const value=probeRuntime(path.resolve(process.cwd()));
+    value.supported=false;value.injectionMode='diagnostic_only';
+    value.compatibility={...value.compatibility,supported:false,mode:'diagnostic_only',reason:'dsh_runtime_not_resolved'};
+    return value;
   }
   throw new Error('dsh_runtime_not_resolved_use_the_connection_launcher');
 }
 
 export function inspectRuntime(runtimePath) {
-  if (typeof runtimePath !== 'string' || !path.isAbsolute(runtimePath)) throw new Error('dsh_runtime_absolute_path_required');
-  const runtime = fs.realpathSync(runtimePath);
-  const moduleFile = name => path.join(runtime, 'node_modules', '@deepseek-ai', name, 'lib', 'index.js');
-  const loop = moduleFile('dsh-agent-loop');
-  for (const name of ['dsh-agent-loop', 'dsh-session', 'dsh-tools', 'dsh-llm']) if (!fs.existsSync(moduleFile(name))) throw new Error('dsh_runtime_modules_missing');
-  const code = fs.readFileSync(loop, 'utf8');
-  const nativeSnapshot = /\bwithRequestMessages\s*\(/.test(code) && /this\.withRequestMessages\s*\(/.test(code) &&
-      /decision\.requestMessages\b/.test(code);
-  const stockBridge = createHash('sha256').update(code).digest('hex') === STOCK_LOOP_SHA256;
-  if (!nativeSnapshot && !stockBridge) throw new Error('当前DSH构建尚未通过记忆请求兼容验证（dsh_request_messages_hook_required）；没有修改宿主或开始采集。');
-  return { runtime, sessionModule: pathToFileURL(moduleFile('dsh-session')).href,
-    toolsModule: pathToFileURL(moduleFile('dsh-tools')).href,
-    llmModule: pathToFileURL(moduleFile('dsh-llm')).href,
-    injectionMode: nativeSnapshot ? 'native_snapshot' : 'scoped_agent_bridge' };
+  const result=probeRuntime(runtimePath);
+  if(!result.supported)throw new Error('当前DSH构建尚未完成核验（dsh_request_messages_hook_required）；请打开插件配置复制环境诊断。本会话采集和召回未接入。');
+  return result;
 }
 
 export function resolveConfiguration(config = {}) {
@@ -79,32 +79,148 @@ async function ready(options) {
   } catch { return false; }
 }
 
-export async function apply(ctx, config = {}) {
-  if (config.enabled !== true) return;
-  // Exceptions here fail this plugin visibly, without modifying the host or
-  // quietly enabling capture on an unsupported request-injection contract.
-  const options = resolveConfiguration(config);
+async function attach(ctx,options,ensureReady,isDisposed) {
   // The legacy bridge is per-agent, version/fingerprint gated and process local.
   // It never edits the host bundle, prototype or durable message history.
   const bridge = options.injectionMode === 'scoped_agent_bridge' ?
-    createRequestBridge({ llm: await import(options.llmModule) }) : null;
+    createRequestBridge({ llm: await import(options.llmModule),sourceSha256:options.compatibility.loop_canonical_sha256 }) : null;
   if (bridge) options.requestBridge = bridge;
   try {
-  if (!await ready(options)) {
-    if (config.autoStart === false) throw new Error('memory_brain_not_ready_start_the_local_launcher');
-    if (process.platform !== 'win32') throw new Error('automatic_start_windows_only_start_kernel_manually');
-    const expectedConfig = path.join(packageRoot, 'private', 'config.json');
-    if (path.resolve(options.configFile).toLowerCase() !== expectedConfig.toLowerCase()) throw new Error('custom_config_requires_manual_kernel_start');
-    try {
-      await execute('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-        '-File', path.join(packageRoot, 'scripts', 'start-local.ps1'), '-NoOpen'],
-      { cwd: packageRoot, windowsHide: true, timeout: 30000, maxBuffer: 65536 });
-    } catch { throw new Error('memory_brain_start_failed_see_local_service_log'); }
-    if (!await ready(options)) throw new Error('memory_brain_readiness_not_confirmed');
-  }
+  if (!await ready(options)) await ensureReady();
+  if (isDisposed()) throw new Error('setup_closed');
+  if (!await ready(options)) throw new Error('memory_brain_readiness_not_confirmed');
   const controller = await createAdapter(ctx, options);
+  if (isDisposed()) { await controller.stop(); throw new Error('setup_closed'); }
   if (!controller.enabled) throw new Error('memory_brain_adapter_not_enabled_see_dsh_log');
   // Unloading removes the adapter only. The kernel may serve another host or
   // an open panel, so it is never killed or purged by a DSH plugin disposer.
+  return controller;
   } catch (error) { bridge?.dispose(); throw error; }
+}
+
+function profileIdentity(ctx,config){
+  const context=ctx.get?.('profileContext');
+  if(typeof context?.dir==='string'&&path.isAbsolute(context.dir)){
+    const normalized=path.resolve(context.dir).replace(/\\/g,'/');
+    return 'profile:'+(process.platform==='win32'?normalized.toLowerCase():normalized);
+  }
+  const flag=process.argv.indexOf('--profile');
+  const named=typeof context?.name==='string'?context.name:flag>=0?process.argv[flag+1]:null;
+  return 'profile:'+(named||config.queueNamespace||'default');
+}
+function runningAgent(ctx){
+  const registry=ctx.get?.('agents');
+  if(!registry||typeof registry.list!=='function')throw new Error('agent_inventory_unavailable');
+  try{const agents=registry.list();if(!Array.isArray(agents))throw new Error();return agents.some(agent=>agent?.status==='running');}
+  catch{throw new Error('agent_inventory_unavailable');}
+}
+function mountSetup(ctx,setup){
+  onboarding.set(ctx,setup);
+  ctx.inject?.(['connection'],scoped=>{
+    const connection=scoped.get?.('connection')||scoped.connection;
+    if(typeof connection?.fetch?.register!=='function'){
+      setup.setError?.({code:'dsh_setup_connection_routes_required'});
+      console.warn('memory-brain: dsh_setup_connection_routes_required; no anonymous setup endpoint was created');
+      return;
+    }
+    return mountOnboarding(scoped,setup);
+  });
+}
+function existingManager(options){
+  return {
+    async status(){
+      const local=JSON.parse(fs.readFileSync(options.configFile,'utf8').replace(/^\uFEFF/,''));
+      const up=await ready(options);
+      return {state:'existing_local',installed_version:'existing',python:{available:true},running:up,
+        models:{embedding_configured:Boolean(local.embed_url),derivation_configured:Boolean(local.llm_url&&local.llm_model)}};
+    },
+    async initialize(){throw new Error('existing_local_installation_preserved');},
+    async saveModels(){throw new Error('configure_existing_installation_in_its_original_directory');},
+    async panelUrl(){
+      const response=await fetch(options.baseUrl+'/v1/session/ticket',{method:'POST',headers:{Authorization:'Bearer '+options.token,'Content-Type':'application/json'},
+        body:'{}',redirect:'error',signal:AbortSignal.timeout(2000)});
+      const value=await response.json();
+      if(!response.ok||value.ok!==true||typeof value.data?.ticket!=='string')throw new Error('panel_ticket_unavailable');
+      return options.baseUrl+'/brain#ticket='+value.data.ticket;
+    },
+    async dispose(){}
+  };
+}
+
+export async function apply(ctx,config={}){
+  if(config.enabled!==true)return;
+  if(Number(process.versions.node.split('.')[0])<22)throw new Error('node_22_or_later_required');
+  if(config.requestBridge!==undefined)throw new Error('request_bridge_is_owned_by_the_verified_public_entry');
+  if(config.token!==undefined||config.baseUrl!==undefined)throw new Error('use_local_brain_config_instead_of_inline_token_or_url');
+  if(config.queueNamespace!==undefined&&!/^[a-zA-Z0-9_-]{1,80}$/.test(config.queueNamespace))throw new Error('queue_namespace_invalid');
+  const runtime=config.runtimePath?probeRuntime(config.runtimePath):discoverRuntime({allowUnverified:true});
+  let disposed=false,controller=null,activation=null,setup;
+  const isDisposed=()=>disposed;
+  const cleanup=async()=>{if(disposed)return;disposed=true;await setup?.dispose();};
+  ctx.effect?.(()=>cleanup);
+  if(!runtime.supported){
+    // Unknown packaged/mobile builds remain readable for diagnostics. No
+    // configuration, Python installation, memory store or adapter is opened.
+    const manager={async status(){return {state:'compatibility_required',models:{}};},async dispose(){}};
+    setup=createOnboarding({manager,compatibility:runtime.compatibility,getAdapterStatus:()=>null});
+    mountSetup(ctx,setup);
+    console.warn('memory-brain: compatibility_required '+JSON.stringify(runtime.compatibility));
+    return;
+  }
+  const legacy=config.brainConfigFile!==undefined||config.runtimeHome===undefined&&fs.existsSync(path.join(packageRoot,'private','config.json'));
+  if(legacy){
+    // An existing explicit/link install keeps its exact data, credentials and
+    // startup contract. Never copy it into a new, empty managed installation.
+    const options=resolveConfiguration(config),manager=existingManager(options);
+    const start=()=>{
+      if(controller?.enabled)return Promise.resolve(controller);
+      if(activation)return activation;
+      activation=attach(ctx,options,async()=>{
+        if(config.autoStart===false)throw new Error('memory_brain_not_ready_start_the_local_launcher');
+        if(process.platform!=='win32')throw new Error('automatic_start_windows_only_start_kernel_manually');
+        if(path.resolve(options.configFile).toLowerCase()!==path.join(packageRoot,'private','config.json').toLowerCase())
+          throw new Error('custom_config_requires_manual_kernel_start');
+        try{await execute('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',
+          '-File',path.join(packageRoot,'scripts','start-local.ps1'),'-NoOpen'],{cwd:packageRoot,windowsHide:true,timeout:30000,maxBuffer:65536});}
+        catch{throw new Error('memory_brain_start_failed_see_local_service_log');}
+      },isDisposed).then(value=>controller=value).finally(()=>activation=null);
+      return activation;
+    };
+    setup=createOnboarding({manager,onStart:start,home:path.dirname(path.dirname(options.configFile)),
+      compatibility:runtime.compatibility,legacy:true,getAdapterStatus:()=>controller});
+    mountSetup(ctx,setup);
+    await start();return;
+  }
+  // GitHub/npm installs keep code replaceable and all mutable state in one
+  // stable per-user/profile directory. Loading never calls initialize().
+  const home=await resolveRuntimeHome({packageRoot,runtimeHome:config.runtimeHome,profile:profileIdentity(ctx,config)});
+  const manager=createRuntimeManager({packageRoot,home});
+  const start=()=>{
+    if(activation)return activation;
+    activation=(async()=>{
+      const state=await manager.status();
+      if(disposed)throw new Error('setup_closed');
+      if(controller?.enabled&&state.running&&!state.restart_required)return controller;
+      if(state.restart_required&&state.running){
+        if(runningAgent(ctx))throw new Error('finish_current_chat_before_applying_models');
+        await controller?.stop();controller=null;
+        if(runningAgent(ctx))throw new Error('finish_current_chat_before_applying_models');
+        await manager.stop();
+      }else if(controller?.enabled&&!state.running){await controller.stop();controller=null;}
+      await manager.start();
+      if(disposed)throw new Error('setup_closed');
+      const connection=await manager.connectionOptions();
+      const options=resolveConfiguration({...config,runtimePath:runtime.runtime,brainConfigFile:connection.configFile});
+      return attach(ctx,options,()=>manager.start(),isDisposed);
+    })().then(value=>controller=value).finally(()=>activation=null);
+    return activation;
+  };
+  setup=createOnboarding({manager,onStart:start,home,compatibility:runtime.compatibility,getAdapterStatus:()=>controller});
+  mountSetup(ctx,setup);
+  const state=await manager.status();
+  if(state.installed_version===state.expected_version&&state.state!=='error'&&config.autoStart!==false){
+    // No install/upgrade occurs here. Failed auto-start stays visible in the
+    // setup card and can be retried explicitly, rather than losing the card.
+    try{await start();}catch(error){setup.setError?.(error);}
+  }
 }

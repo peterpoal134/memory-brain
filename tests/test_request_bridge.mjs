@@ -14,8 +14,13 @@ import { createRequestBridge,STOCK_LOOP_SHA256,STOCK_METHOD_SHA256 } from '../ad
 const stockFile=process.env.DSH_STOCK_LOOP_FILE,llmFile=process.env.DSH_LLM_MODULE;
 if(!stockFile||!llmFile)throw new Error('Set DSH_STOCK_LOOP_FILE and DSH_LLM_MODULE to read-only, matching DSH modules.');
 const raw=fs.readFileSync(stockFile),sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
-assert.equal(sha(raw),STOCK_LOOP_SHA256,'unsupported original loop source');
-const source=raw.toString('utf8');
+const rawBefore=sha(raw);
+// The host probe strips one file BOM and canonicalizes CRLF. This does not
+// accept formatting/content changes beyond those two transport differences.
+const canonicalSource=bytes=>bytes.toString('utf8').replace(/^\uFEFF/,'').replace(/\r\n/g,'\n');
+const methodHash=fn=>sha(Function.prototype.toString.call(fn).replace(/\r\n/g,'\n'));
+const source=canonicalSource(raw);
+assert.equal(sha(source),STOCK_LOOP_SHA256,'unsupported original loop source');
 const method={
   buildRequest:source.slice(source.indexOf('\tbuildRequest(config, preparedCall, tools, position, startsRequestSeries, signal) {')+1,
     source.indexOf('\n\t}\n};\n//#endregion\n//#region lib/types/constants.js')+'\n\t}'.length),
@@ -47,14 +52,14 @@ const globals={canonicalHeader:input=>({config:input.config,...(input.tools?{too
   createAssistantMessage:llm.createAssistantMessage,executeToolCalls:async()=>({concluded:false})};
 const native=Object.fromEntries(Object.entries(method).map(([name,text])=>{
   const fn=vm.runInNewContext('({'+text+'})',globals)[name];
-  assert.equal(sha(Function.prototype.toString.call(fn)),STOCK_METHOD_SHA256[name]);return [name,fn];
+  assert.equal(methodHash(fn),STOCK_METHOD_SHA256[name]);return [name,fn];
 }));
 let passed=0,failed=0,serial=0;
 const check=async(name,fn)=>{try{await fn();passed++;console.log('PASS '+name);}catch(error){failed++;console.error('FAIL '+name+': '+error.stack);}};
 
-function fixture(label='fixture'){
+function fixture(label='fixture',methods=native){
   const events=[],history=[],requests=[],controller=new AbortController();let header,context;
-  const agent=Object.create(native);
+  const agent=Object.create(methods);
   Object.assign(agent,{id:label+'-'+(++serial),phase:{kind:'running',turn:1,step:1,abort:controller},
     frozenMessages:new WeakSet(),requestHeaderLogged:false,requestSurfaceGeneration:0,
     assistantAttemptCounter:0,assistantStreamRevision:0,toolsChanged:()=>false,
@@ -86,6 +91,36 @@ await check('actual stock fingerprints are exact and installation changes only t
   assert.notEqual(f.agent.step,native.step);assert.notEqual(f.agent.buildRequest,native.buildRequest);
   assert.equal(Object.getPrototypeOf(f.agent).step,native.step);assert.equal(Object.getPrototypeOf(f.agent).buildRequest,native.buildRequest);
   bridge.dispose();assert.equal(Object.hasOwn(f.agent,'step'),false);assert.equal(Object.hasOwn(f.agent,'buildRequest'),false);
+});
+await check('actual VM methods with CRLF retain exact content compatibility and request-only branding',async()=>{
+  const crlf=Object.fromEntries(Object.entries(method).map(([name,text])=>{
+    const fn=vm.runInNewContext('({'+text.replace(/\n/g,'\r\n')+'})',globals)[name];
+    assert(Function.prototype.toString.call(fn).includes('\r\n'));
+    assert.equal(methodHash(fn),STOCK_METHOD_SHA256[name]);return [name,fn];
+  }));
+  const f=fixture('crlf',crlf),bridge=createRequestBridge({llm});
+  assert.equal(bridge.stage(f.payload(),f.decision(['CRLF_EVIDENCE'])).staged,true);
+  await f.agent.step(f.decision(['CRLF_EVIDENCE']));
+  assert.deepEqual(blocks(f.requests[0]),['CRLF_EVIDENCE']);
+  assert.equal(llm.isAgentLoopRequest(f.requests[0]),true);
+  assert(!JSON.stringify(f.events).includes('CRLF_EVIDENCE'));
+  bridge.dispose();
+  assert.equal(Object.hasOwn(f.agent,'step'),false);assert.equal(Object.hasOwn(f.agent,'buildRequest'),false);
+});
+await check('one changed character or one additional space remains rejected even in CRLF methods',async()=>{
+  for(const name of ['step','buildRequest'])for(const mutation of ['character','space']){
+    const text=mutation==='character'?method[name].replace('this.','thiz.'):
+      method[name].replace('this.', 'this. ');
+    assert.notEqual(text,method[name]);
+    assert.equal(text.length,method[name].length+(mutation==='space'?1:0));
+    const changed=vm.runInNewContext('({'+text.replace(/\n/g,'\r\n')+'})',globals)[name];
+    assert.notEqual(methodHash(changed),STOCK_METHOD_SHA256[name]);
+    const f=fixture('changed-'+name,{...native,[name]:changed}),bridge=createRequestBridge({llm});
+    assert.equal(bridge.stage(f.payload(),f.decision(['MUST_NOT_INJECT'])).staged,false);
+    assert.equal(bridge.status().last_error,'unknown_'+name+'_method');
+    assert.equal(Object.hasOwn(f.agent,'step'),false);assert.equal(Object.hasOwn(f.agent,'buildRequest'),false);
+    bridge.dispose();
+  }
 });
 await check('step consumes the final outer decision, retaining inner blocks but not stale early blocks',async()=>{
   const f=fixture(),bridge=createRequestBridge({llm});
@@ -228,8 +263,9 @@ await check('other plugins later wrappers survive unload and captured bridge wra
   await f.agent.step(f.decision(['STALE']));assert.deepEqual(blocks(f.requests[0]),[]);
 });
 await check('real source bytes and native prototype remain unchanged',async()=>{
-  assert.equal(sha(fs.readFileSync(stockFile)),STOCK_LOOP_SHA256);
-  for(const name of ['step','buildRequest'])assert.equal(sha(Function.prototype.toString.call(native[name])),STOCK_METHOD_SHA256[name]);
+  assert.equal(sha(fs.readFileSync(stockFile)),rawBefore);
+  assert.equal(sha(canonicalSource(fs.readFileSync(stockFile))),STOCK_LOOP_SHA256);
+  for(const name of ['step','buildRequest'])assert.equal(methodHash(native[name]),STOCK_METHOD_SHA256[name]);
 });
 console.log(JSON.stringify({passed,failed,production_mutations:0,real_model_calls:0,host_method_bodies:'verified_stock_source'}));
 if(failed)process.exitCode=1;

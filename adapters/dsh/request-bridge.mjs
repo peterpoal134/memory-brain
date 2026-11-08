@@ -1,7 +1,7 @@
-/** Restricted in-process compatibility for one verified stock DSH build.
+/** Restricted in-process compatibility for exact verified DSH source builds.
  *
  * This is not an official requestMessages hook. The public entry must first
- * verify STOCK_LOOP_SHA256; both instance methods are independently fingerprinted
+ * verify the selected complete source hash; both methods are fingerprinted
  * here. No prototype, host file, ASAR, durable session or LLM route is patched.
  */
 import crypto from 'node:crypto';
@@ -11,7 +11,26 @@ export const STOCK_METHOD_SHA256=Object.freeze({
   buildRequest:'7833829fbcb6fbcfef27c2d771e3adbdcdecf89a3ef7837f71185fad08128f42',
   step:'1a17029cf820c00e61f9c29b6ae5170e34044e4d4b877137e1e5b3d9cbac6dfa',
 });
-const hash=fn=>crypto.createHash('sha256').update(Function.prototype.toString.call(fn)).digest('hex');
+// Complete source hashes select a separately verified pair of method bodies.
+// A version label never grants compatibility, and unknown hashes stay closed.
+export const VERIFIED_LOOP_BUILDS=Object.freeze({
+  [STOCK_LOOP_SHA256]:Object.freeze({name:'official_021_stock',methods:STOCK_METHOD_SHA256}),
+  a6fa8e0c7c90191caf5f4a3bb5c624a86e9845cf3c79d020b71420d0e20ae4c1:Object.freeze({
+    name:'official_022_rc1',methods:Object.freeze({
+      buildRequest:'7833829fbcb6fbcfef27c2d771e3adbdcdecf89a3ef7837f71185fad08128f42',
+      step:'3897f0b4f560d26ba21f640e29d1d549cf7094877d9c411178146b33d2e242b7',
+    }),
+  }),
+  a8b456b07ad59a77b65be20702cb07fb202e646f7783c5f0bbd3f8d3d48d4937:Object.freeze({
+    name:'dsha_build190_reconstructed',methods:Object.freeze({
+      buildRequest:'7833829fbcb6fbcfef27c2d771e3adbdcdecf89a3ef7837f71185fad08128f42',
+      step:'499c2f197a8cc77ebf8a11255f54e2cdd214c2a9e5f0305db9ddee1fa6a45b0f',
+    }),
+  }),
+});
+// Only line-ending representation is normalized. Spaces, comments and every
+// other method byte remain part of the exact verified-build fingerprint.
+const hash=fn=>crypto.createHash('sha256').update(Function.prototype.toString.call(fn).replace(/\r\n/g,'\n')).digest('hex');
 const object=value=>value!==null&&(typeof value==='object'||typeof value==='function');
 const position=value=>value&&Number.isInteger(value.turn)&&value.turn>=0&&Number.isInteger(value.step)&&value.step>=0;
 function methodDescriptor(agent,name){
@@ -27,11 +46,12 @@ function ownsDescriptor(agent,name,installed){
     current.configurable===installed.configurable&&current.enumerable===installed.enumerable&&current.writable===installed.writable;
 }
 
-export function createRequestBridge({llm}={}){
+export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
+  const build=Object.hasOwn(VERIFIED_LOOP_BUILDS,sourceSha256)?VERIFIED_LOOP_BUILDS[sourceSha256]:null;
   const records=new WeakMap(),agents=new Set();
   const create=llm?.createUserMessage,mark=llm?.markAgentLoopRequest,isBranded=llm?.isAgentLoopRequest;
-  const helpers=typeof create==='function'&&typeof mark==='function';
-  let disposed=false,lastError=helpers?null:'host_llm_helpers_missing';
+  const helpers=Boolean(build)&&typeof create==='function'&&typeof mark==='function';
+  let disposed=false,lastError=!build?'host_loop_build_unverified':helpers?null:'host_llm_helpers_missing';
   const counters={stages:0,installed:0,injections:0,refused:0,cleared:0,restored:0,
     external_wrappers_preserved:0,aborted:0,fail_open:0,original_errors:0,reentrant_calls:0};
   const report=code=>{lastError=code;};
@@ -70,7 +90,7 @@ export function createRequestBridge({llm}={}){
     const original={},originalOwn={},installed={};
     for(const name of ['buildRequest','step']){
       const descriptor=methodDescriptor(agent,name),own=Object.getOwnPropertyDescriptor(agent,name);
-      if(!descriptor||!('value'in descriptor)||typeof descriptor.value!=='function'||hash(descriptor.value)!==STOCK_METHOD_SHA256[name]){
+      if(!descriptor||!('value'in descriptor)||typeof descriptor.value!=='function'||hash(descriptor.value)!==build.methods[name]){
         report('unknown_'+name+'_method');return null;
       }
       if(own&&(!('value'in own)||(!own.configurable&&!own.writable))||!own&&!Object.isExtensible(agent)){
@@ -148,7 +168,7 @@ export function createRequestBridge({llm}={}){
     records.set(agent,record);agents.add(record.ref);counters.installed++;return record;
   }
   function stage(payload,decision){
-    if(disposed||!helpers)return {staged:false,reason:disposed?'disposed':'host_llm_helpers_missing'};
+    if(disposed||!helpers)return {staged:false,reason:disposed?'disposed':lastError};
     const agent=payload?.agent;
     if(!object(agent)){counters.refused++;report('agent_missing');return {staged:false,reason:lastError};}
     const previous=records.get(agent);
