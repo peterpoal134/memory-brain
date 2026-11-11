@@ -50,7 +50,7 @@
   "NOTICE.md": "1ba4ba29a1a7273bd2c8229009f5b6451f1537f2dee099ae6e3b45933fffd984",
   "package.json": "03d8a10afd5619f55163a942c4f557fcb8be5b7172a9d14e0cd9f9f0485236b0",
   "pyproject.toml": "dee9fe736987d7270ef5056878ad5ac6f97c5927f614e544d55dd757b4205cba",
-  "README.md": "5be665dfaecd63b7df2d7bec4b6bfbc279b529f66010a1825bf25b1312f82752",
+  "README.md": "b93b2a1c456ea1161e9b405cb03cd2d664408db83575abd81837da7488f366b3",
   "scripts/build_brain.mjs": "02471a86a95a92fc5c96f387dc25f13e8ef216936a40c8dc58fc28f685a521b1",
   "scripts/build_fallback.py": "9223867d25aae0fb5a11ba48008c479a9846e32d1bdca00c426f399f17abd07e",
   "scripts/build_plugin_release.py": "41bd309994d14effeeabf624102ed51965a7b2601ccd5944dbdc6b3deb60c930",
