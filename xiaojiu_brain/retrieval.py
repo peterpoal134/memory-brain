@@ -374,8 +374,14 @@ class Retriever:
         omitted = 0
         while remaining:
             source_ids = {r[0] for r in selected_spans}
+            source_conversations = {messages[mid]['conversation_id'] for mid in source_ids if mid in messages}
             def priority(key):
-                return units[key]["score"] * (1.08 if key[0] not in source_ids else 1.)
+                # Repeated questions and replies from one conversation must
+                # not monopolize an owner-wide evidence budget. This is a
+                # bounded packing preference; every eligibility/privacy/time
+                # check and the original fused ranking remain unchanged.
+                repeated_conversation = conversation_id is None and messages[key[0]]['conversation_id'] in source_conversations
+                return units[key]["score"] * (1.08 if key[0] not in source_ids else 1.) * (.8 if repeated_conversation else 1.)
             span = max(remaining, key=lambda key: (priority(key), -key[0], -key[1]))
             u = remaining.pop(span)
             if _covered(span, selected_spans):
@@ -466,6 +472,8 @@ class Retriever:
         elif delivered_conflicts or raw_option_ambiguity:
             gaps.append({'code':'conflict_notice_omitted_budget'})
         trace.update(selected_evidence=len(selected), budget_omitted_evidence=omitted,
+                     cross_conversation_diversity=conversation_id is None,
+                     selected_conversation_count=len({messages[span[0]]['conversation_id'] for span in selected_spans}),
                      time_annotations_included=temporal_included,time_annotations_omitted=temporal_omitted,
                      estimated_tokens=estimate_tokens(block), ranked_documents=len(fused),
                      selected_document_ids=[r["document_id"] for r in selected],

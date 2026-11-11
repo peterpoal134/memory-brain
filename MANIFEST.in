@@ -5,7 +5,7 @@ include package.json cordis.patch.yml
 include docs/BACKGROUND-DERIVATION.md docs/CHAT-USAGE.md docs/BRANDING.md docs/CONTRACT.md
 include docs/DAILY-STATE-RULES.md docs/LIFE-LAYER.md docs/MEMORY-MAP.md docs/OBSERVATORY-API.md
 include docs/PROFILE-IMPORTANT.md docs/DSH-INSTALL.md docs/SEMANTIC-MEMORY.md docs/TIME-SEMANTICS.md
-include docs/DSH-DESKTOP-COMPAT.md docs/DSH-FIRST-RUN.md docs/RELEASE-0.2.2.md docs/CONTEXT-MANAGEMENT.md docs/MAINTENANCE.md
+include docs/DSH-DESKTOP-COMPAT.md docs/DSH-FIRST-RUN.md docs/RELEASE-0.2.3.md docs/CONTEXT-MANAGEMENT.md docs/MAINTENANCE.md
 include scripts/install.ps1 scripts/start-local.ps1 scripts/open-panel.ps1 scripts/connect-dsh.ps1
 include scripts/register-dsh.mjs scripts/verify-package.ps1 scripts/build_brain.mjs scripts/build_fallback.py
 include scripts/build_plugin_release.py scripts/build_release.py scripts/dsh_plan.py scripts/dsh-request-hook.mjs

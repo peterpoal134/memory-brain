@@ -14,6 +14,7 @@ import { createRequestBudget } from './request-budget.mjs';
 import { createContextSettings, CONTEXT_DEFAULTS } from './context-settings.mjs';
 import { createCompactionSupport } from './compaction-support.mjs';
 import { probeRuntime } from './host-compat.mjs';
+import { discoverHostRuntime } from './runtime-discovery.mjs';
 import { createRuntimeManager, resolveRuntimeHome } from './runtime-home.mjs';
 import { createOnboarding, mountOnboarding } from './onboarding.mjs';
 
@@ -31,25 +32,7 @@ function contextSettings(configFile,config){
 export const getOnboarding = ctx => onboarding.get(ctx);
 
 export function discoverRuntime({allowUnverified=false}={}) {
-  const inspect=allowUnverified?probeRuntime:inspectRuntime;
-  if (process.env.XIAOJIU_DSH_RUNTIME) return inspect(path.resolve(process.env.XIAOJIU_DSH_RUNTIME));
-  const anchors = [process.argv[1], fileURLToPath(import.meta.url), path.join(process.cwd(), 'package.json')];
-  for (const anchor of anchors) {
-    if (!anchor || !path.isAbsolute(anchor)) continue;
-    let loop;
-    try { loop = createRequire(anchor).resolve('@deepseek-ai/dsh-agent-loop'); } catch { continue; }
-    // Resolve only from the host's own module search scope; never scan disks or
-    // silently download a second copy of the DSH runtime.
-    const candidate = path.resolve(path.dirname(loop), '../../../..');
-    if (fs.existsSync(path.join(candidate, 'node_modules/@deepseek-ai/dsh-session/lib/index.js'))) return inspect(candidate);
-  }
-  if(allowUnverified){
-    const value=probeRuntime(path.resolve(process.cwd()));
-    value.supported=false;value.injectionMode='diagnostic_only';
-    value.compatibility={...value.compatibility,supported:false,mode:'diagnostic_only',reason:'dsh_runtime_not_resolved'};
-    return value;
-  }
-  throw new Error('dsh_runtime_not_resolved_use_the_connection_launcher');
+  return discoverHostRuntime({allowUnverified,probeRuntime,inspectRuntime,pluginUrl:import.meta.url});
 }
 
 export function inspectRuntime(runtimePath) {
@@ -83,7 +66,9 @@ export function resolveConfiguration(config = {}) {
 
 async function ready(options) {
   try {
-    const response = await fetch(options.baseUrl + '/v1/status', { redirect: 'error', signal: AbortSignal.timeout(1500),
+    const configured = Number(options.readinessTimeoutMs ?? 1500);
+    const readinessTimeoutMs = Number.isFinite(configured) ? Math.max(500, Math.min(30000, Math.floor(configured))) : 1500;
+    const response = await fetch(options.baseUrl + '/v1/status', { redirect: 'error', signal: AbortSignal.timeout(readinessTimeoutMs),
       headers: { Authorization: `Bearer ${options.token}` } });
     const value = await response.json();
     return response.ok && value.ok === true && typeof value.data?.version === 'string' && typeof value.data?.build_id === 'string';
@@ -232,7 +217,30 @@ export async function apply(ctx,config={}){
       getContextSettings:()=>({settings:policy.read(),restart_required:Boolean(controller?.enabled&&controller.contextPolicySignature!==policy.signature())}),
       saveContextSettings:body=>policy.save(body)});
     mountSetup(ctx,setup);
-    await start();return;
+    // Keep this installation's setup scope alive after a temporary backend
+    // outage. It owns neither the external kernel nor its startup contract.
+    try { await start(); }
+    catch (error) {
+      if (disposed) return;
+      setup.setError?.(error);
+      const suppliedInterval = Number(config.reconnectIntervalMs ?? 5000);
+      const retryMs = Number.isFinite(suppliedInterval) ? Math.max(1000, Math.min(60000, Math.floor(suppliedInterval))) : 5000;
+      const suppliedAttempts = Number(config.reconnectAttempts ?? 12);
+      const maxAttempts = Number.isFinite(suppliedAttempts) ? Math.max(0, Math.min(60, Math.floor(suppliedAttempts))) : 12;
+      let attempts = 0;
+      if (maxAttempts > 0) {
+        const timer = setInterval(() => {
+          if (disposed || controller?.enabled || attempts >= maxAttempts) { clearInterval(timer); return; }
+          if (activation) return;
+          attempts++;
+          start().then(() => { setup.setError?.(null); clearInterval(timer); })
+            .catch(failure => { if (!disposed) setup.setError?.(failure); });
+        }, retryMs);
+        timer.unref?.();
+        ctx.effect?.(() => () => clearInterval(timer));
+      }
+    }
+    return;
   }
   // GitHub/npm installs keep code replaceable and all mutable state in one
   // stable per-user/profile directory. Loading never calls initialize().

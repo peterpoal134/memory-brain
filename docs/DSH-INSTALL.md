@@ -96,4 +96,4 @@ GitHub/npm 首次准备把 `.venv`、配置、数据库、队列、日志放在�
 
 代码 AGPL-3.0，皮层资产 CC BY-SA 3.0，Three.js 和图标保留各自许可证，见 `LICENSE` 和 `NOTICE.md`。公开包提供对应运行源码和必要构建工具。
 
-当前版本范围见 [发布说明](RELEASE-0.2.2.md)，升级和备份恢复见 [维护步骤](MAINTENANCE.md)。
+当前版本范围见 [发布说明](RELEASE-0.2.3.md)，升级和备份恢复见 [维护步骤](MAINTENANCE.md)。

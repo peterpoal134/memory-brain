@@ -117,6 +117,16 @@ window.__ModuleLoader__.load({
       return compatibility && typeof compatibility === 'object' &&
         (compatibility.supported === false || compatibility.mode === 'diagnostic_only');
     }
+    function compatibilityMessage(compatibility) {
+      const reason = compatibility?.reason;
+      if (reason === 'dsh_runtime_not_resolved' || reason === 'runtime_unavailable')
+        return '未找到当前 DSH 的运行模块，尚未完成构建核验。采集和召回未启用。';
+      if (reason === 'required_modules_missing')
+        return '已找到宿主位置，但所需运行模块不完整。采集和召回未启用。';
+      if (reason === 'node_22_or_later_required')
+        return '宿主的 Node 版本需要为 22 或更新版本。采集和召回未启用。';
+      return '已找到宿主模块，但当前构建尚未完成核验。采集和召回未启用。';
+    }
     function safeDiagnostic(compatibility) {
       // Never serialize the whole status, module paths, arbitrary extra fields,
       // credentials or runtime home. Only the public compatibility facts travel.
@@ -134,6 +144,13 @@ window.__ModuleLoader__.load({
         if (name === 'loop' && digest(item.canonical_sha256)) result.modules[name].canonical_sha256 = digest(item.canonical_sha256);
       }
       for (const name of ['loop_sha256', 'loop_canonical_sha256']) if (digest(compatibility[name])) result[name] = digest(compatibility[name]);
+      const discovery = compatibility.discovery;
+      if (discovery && typeof discovery === 'object') result.discovery = {
+        source: code(discovery.source),
+        layout: ['asar', 'directory', 'unknown'].includes(discovery.layout) ? discovery.layout : 'unknown',
+        candidate_count: Number.isInteger(discovery.candidate_count) && discovery.candidate_count >= 0 && discovery.candidate_count <= 64 ? discovery.candidate_count : null,
+        electron_version: version(discovery.electron_version),
+      };
       return result;
     }
 
@@ -213,7 +230,7 @@ window.__ModuleLoader__.load({
 
       async function perform(action, body, success) {
         if (diagnosticOnly(statusRef.current?.compatibility)) {
-          setError('当前构建仅可查看诊断，采集和召回未启用。');
+          setError(compatibilityMessage(statusRef.current?.compatibility));
           return;
         }
         if (pendingRef.current || statusRef.current?.busy) return;
@@ -340,8 +357,8 @@ window.__ModuleLoader__.load({
         };
         return h('div', { style: styles.root },
           h('h2', { style: { ...styles.heading, fontSize: 21 } }, '忆核大脑 · 运行环境诊断'),
-          h('p', { role: 'status', style: styles.notice }, '当前构建尚未完成核验，采集和召回未启用。'),
-          h('p', { style: styles.muted }, '这里只读取兼容性信息，不准备环境、不保存模型配置、不启动内核，也不打开面板。需要先核对实际运行宿主，不能仅凭“0.2.1-rc.2”版本号判断。'),
+          h('p', { role: 'status', style: styles.notice }, compatibilityMessage(status.compatibility)),
+          h('p', { style: styles.muted }, '这里只读取兼容性信息。未找到运行模块与找到后构建未核验是两种不同原因；请复制下方安全诊断。版本号本身不足以确认兼容。'),
           h('p', { style: styles.muted }, '手机可能只是网页访问端；如果是手机独立 App，需要由其作者核实内置 Node、Python 及插件接口能力，当前不宣称已兼容。'),
           h('div', { style: styles.row }, button('重新检查', refresh, { disabled: pending }), button('复制安全诊断', copyDiagnostic, { disabled: false })),
           networkError ? h('p', { role: 'alert', style: styles.error }, networkError) : null,
@@ -352,7 +369,7 @@ window.__ModuleLoader__.load({
             h('textarea', { readOnly: true, value: diagnosticText, rows: 12, spellCheck: false,
               'aria-label': '手动复制安全诊断', style: { ...styles.input, fontFamily: 'monospace', fontSize: 12 },
               onFocus: event => event.target.select?.() })) : null,
-          h('p', { style: styles.muted }, '诊断只包含插件/Node 版本、平台、架构和模块指纹，不包含目录、模型密钥或对话正文。'));
+          h('p', { style: styles.muted }, '诊断只包含版本、平台、模块指纹、宿主布局和发现状态，不包含目录、模型密钥或对话正文。'));
       }
       return h('div', { style: styles.root },
         h('h2', { style: { ...styles.heading, fontSize: 21 } }, '忆核大脑 · 首次设置'),

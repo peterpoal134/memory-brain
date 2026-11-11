@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-brain",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "Memory Brain: standalone evidence-first memory kernel, DSH adapter and local 3D control panel",
   "license": "AGPL-3.0-only",
@@ -83,7 +83,7 @@
     "docs/DSH-INSTALL.md",
     "docs/DSH-DESKTOP-COMPAT.md",
     "docs/DSH-FIRST-RUN.md",
-    "docs/RELEASE-0.2.2.md",
+    "docs/RELEASE-0.2.3.md",
     "docs/CONTEXT-MANAGEMENT.md",
     "docs/BACKGROUND-DERIVATION.md",
     "docs/CHAT-USAGE.md",

@@ -81,6 +81,11 @@ export function createOnboarding({manager,onStart,home='',compatibility='',legac
     const adapter=typeof getAdapterStatus==='function'?getAdapterStatus():null;
     let adapterSnapshot;try{adapterSnapshot=adapter?.status?.();}catch{/* diagnostics are optional */}
     const enabled=!diagnosticOnly&&(typeof getAdapterStatus==='function'?adapter?.enabled===true:connected);
+    let capture=null;
+    if(enabled)try{const observed=adapterSnapshot?.capture;
+      if(Number.isSafeInteger(observed?.attached_sessions)&&observed.attached_sessions>=0)
+        capture={attached_sessions:observed.attached_sessions,live_discovery:observed.live_discovery===true};
+    }catch{/* optional diagnostics */}
     let context=null,contextManagement=null;
     if(!diagnosticOnly){
       if(typeof getContextSettings==='function')try{
@@ -93,7 +98,7 @@ export function createOnboarding({manager,onStart,home='',compatibility='',legac
     }
     return {phase:disposed?'closed':diagnosticOnly?'compatibility_required':busy?'working':enabled?'connected':runtime.installed_version?'ready':'not_initialized',
       operation,busy,error:lastError||runtime.error,csrfToken,runtime,home,compatibility,legacy,
-      context,adapter:{enabled,context_management:contextManagement,session_history:diagnosticOnly?null:publicSessionHistory(adapterSnapshot?.session_history)}};
+      context,adapter:{enabled,capture,context_management:contextManagement,session_history:diagnosticOnly?null:publicSessionHistory(adapterSnapshot?.session_history)}};
   }
   function enqueue(name,action){
     if(disposed)return reply(410,'setup_closed',false);
@@ -147,7 +152,7 @@ export function createOnboarding({manager,onStart,home='',compatibility='',legac
     }catch(error){return reply(409,failure(error),false);}
   }
   async function dispose(){if(disposed)return;disposed=true;connected=false;await manager.dispose?.();}
-  const setError=error=>{lastError=failure(error);};
+  const setError=error=>{lastError=error==null?null:failure(error);};
   return Object.freeze({status,handle,dispose,setError});
 }
 

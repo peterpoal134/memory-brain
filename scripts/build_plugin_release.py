@@ -10,7 +10,7 @@ from email.parser import Parser
 PUBLIC_DOCS=('BACKGROUND-DERIVATION.md','CHAT-USAGE.md','BRANDING.md','CONTRACT.md','DAILY-STATE-RULES.md',
     'LIFE-LAYER.md','MEMORY-MAP.md','OBSERVATORY-API.md','PROFILE-IMPORTANT.md','DSH-INSTALL.md',
     'SEMANTIC-MEMORY.md','TIME-SEMANTICS.md','DSH-DESKTOP-COMPAT.md','DSH-FIRST-RUN.md',
-    'RELEASE-0.2.2.md','CONTEXT-MANAGEMENT.md','MAINTENANCE.md')
+    'RELEASE-0.2.3.md','CONTEXT-MANAGEMENT.md','MAINTENANCE.md')
 PUBLIC_SCRIPTS=('install.ps1','start-local.ps1','open-panel.ps1','connect-dsh.ps1','register-dsh.mjs',
     'verify-package.ps1','build_brain.mjs','build_fallback.py','build_plugin_release.py','build_release.py','dsh_plan.py',
     'dsh-request-hook.mjs','dsh-compat.ps1','build_runtime_wheel.py','dsh-compat-report.mjs')
@@ -270,13 +270,14 @@ def build(root,output,verify_python=None,test_python=None):
         'kernel_version':kernel_version,'build_id':module.build_id(),'release_channel':channel,
         'production_ready_claimed':False,
         'release_kind':'framework_and_reference_implementation',
-        'release_notes':'docs/RELEASE-0.2.2.md',
+        'release_notes':'docs/RELEASE-0.2.3.md',
         'long_term_stability_validated':False,'cross_hardware_validated':False,
         'created_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':'Windows 10/11',
         'python':'>=3.10','node':'>=22','entry':'adapters/dsh/memory-brain.mjs',
         'dsh_contract':'request-only snapshots via native host contract or verified stock per-agent compatibility bridge',
         'contains':['kernel_source','kernel_wheel','DSH_adapter','DSH_bundle_manifest','context_management',
             'short_summary_policy','pressure_cooldown','native_tool_result_pruning','permission_checked_session_history',
+            'desktop_asar_runtime_discovery','existing_live_session_adoption','bounded_legacy_reconnect','cross_conversation_source_diversity',
             '3D_panel','life_and_emotion_rules','licenses'],
         'context_management':{'default_enabled':True,'trigger_turns':12,'keep_complete_turns':4,
             'requires_host_compaction':True,'provides_native_service_when_missing':True,

@@ -72,6 +72,7 @@ export function catchUp(queue, session, { limit = 200, captureAfter = null } = {
   if (!conversation || !Array.isArray(session.log)) return 0;
   const events = session.log, cursor = queue.cursor(conversation); let start = 0, scanned = 0;
   if (cursor && events[cursor.index] && eventIdentity(events[cursor.index]) === cursor.identity) start = cursor.index + 1;
+  if (start >= events.length) return 0;
   const projection = archivalProjection(events, Math.min(events.length, start + limit));
   for (let index = start; index < events.length && scanned < limit; index++, scanned++) {
     const event = events[index]; let blocked = false;
@@ -110,7 +111,7 @@ export async function createAdapter(ctx, config = {}) {
   const profileContext = { supported: null, state: 'not_requested', included: false, omitted_count: 0 };
   let contextManagement=null, sessionHistory=null;
   const stopSupport = async () => { try { await config.compactionSupport?.stop(); } catch { warn('context_support_stop_failed'); } };
-  const controller = { enabled: false, warnings, queue: null, chatUsage: null, stop: async () => { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose();await stopSupport(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, chat_usage: controller.chatUsage?.status() || { enabled:false }, important_tool: { ...importantTool }, profile_context: { ...profileContext },
+  const controller = { enabled: false, warnings, queue: null, chatUsage: null, stop: async () => { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose();await stopSupport(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, capture: { attached_sessions: sessions.size, live_discovery: true }, chat_usage: controller.chatUsage?.status() || { enabled:false }, important_tool: { ...importantTool }, profile_context: { ...profileContext },
     session_history:sessionHistory?.status()||{enabled:false,available:false,tool_available:false,state:'not_started'},
     context_management:{compression:contextManagement?.status()||{state:'not_started'},budget:config.requestBudget?.status()||{state:'unavailable',active:false},support:config.compactionSupport?.status()||{state:'unavailable'}},
     request_injection: config.requestBridge?.status() || { mode: config.injectionMode || 'unverified_direct', active: controller.enabled } }) };
@@ -243,7 +244,30 @@ export async function createAdapter(ctx, config = {}) {
       enabled:()=>controller.enabled && config.captureEnabled !== false && config.recallEnabled !== false && config.historyEnabled !== false,
       autoEnabled:config.historyAutoEnabled !== false,captureAfter,shutdownSignal:importantShutdown.signal,onWarning:warn});
     if(config.historyEnabled === false)sessionHistory.setToolState('disabled');
-    const tick = async () => { for (const session of sessions.values()) scan(session); await queue.flush(); queue.sweep(); };
+    // A hot attachment must also adopt sessions that already existed before
+    // this adapter loaded. An idle source conversation may never pre-step again.
+    const discoveryWarnings = new Set();
+    const discoverLive = () => {
+      if (!controller.enabled || config.captureEnabled === false) return;
+      const adopt = session => { if (session?.id && Array.isArray(session.log)) member(session); };
+      for (const name of ['sessions', 'agents']) {
+        try {
+          const service = ctx.get?.(name);
+          const rows = service?.list?.();
+          if (!Array.isArray(rows)) continue;
+          for (const row of rows) adopt(name === 'agents' ? row?.session : row);
+        } catch {
+          if (!discoveryWarnings.has(name)) { discoveryWarnings.add(name); warn('live_' + name + '_discovery_unavailable'); }
+        }
+      }
+    };
+    ctx.on?.('session/created', session => { if (controller.enabled && config.captureEnabled !== false) member(session); });
+    ctx.on?.('session/event', session => {
+      if (!controller.enabled || config.captureEnabled === false) return;
+      member(session); scan(session);
+    });
+    discoverLive();
+    const tick = async () => { discoverLive(); for (const session of sessions.values()) scan(session); await queue.flush(); queue.sweep(); };
     timer = setInterval(() => { tick().catch(() => warn('queue_tick_failed')); }, Math.max(50, config.intervalMs || 1000)); timer.unref?.();
     const recall = async (payload, next) => {
       const decision = await next();
