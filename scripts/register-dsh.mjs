@@ -166,7 +166,7 @@ function isLegacy(entry){
   return LEGACY_IDS.has(id)||[...LEGACY_IDS].some(item=>name.includes(item));
 }
 
-function conflicts(records){
+function conflicts(records,ownedEntryPath){
   const effective=new Map(),anonymous=[];
   for(const record of records){
     const entry=record.entry;
@@ -178,7 +178,12 @@ function conflicts(records){
       effective.set(entry.id,{...old,...entry});
     }
   }
-  return [...effective.values(),...anonymous].filter(row=>isLegacy(row)&&row.disabled!==true&&!row.parentDisabled)
+  // The caller has already checked ID ownership, overrides and exact path.
+  // A public entry installed under a folder named after the old project is
+  // still this entry; directory text alone must not turn it into a duplicate.
+  return [...effective.values(),...anonymous].filter(row=>
+    !(row.id===ENTRY_ID&&entryMatches(row.name,ownedEntryPath))&&
+    isLegacy(row)&&row.disabled!==true&&!row.parentDisabled)
     .map(row=>String(row.id||'unnamed_memory_plugin'));
 }
 
@@ -307,7 +312,7 @@ export async function registerDSH(options){
     action=own.length?'remove':'noop';
     if(own.length&&removeOwnedAST(document,deps)!==1)fail('profile_ambiguous');
   }else{
-    if(conflicts([...inherited.inherited,...records,...inherited.home]).length)fail('legacy_memory_conflict');
+    if(conflicts([...inherited.inherited,...records,...inherited.home],entry).length)fail('legacy_memory_conflict');
     if(own.length){if(own[0].entry.disabled||own[0].parentDisabled||!sameRegistration(own[0].entry.config,config))fail('mixed_configuration');action='noop';}
     else{document.contents.flow=false;document.add(document.createNode({insert:[{id:ENTRY_ID,name:pathToFileURL(entry).href,config}]}));action='insert';}
   }

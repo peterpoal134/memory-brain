@@ -2,9 +2,10 @@
  * Merely loading the plugin, fetching status, or rendering the card never installs.
  */
 import crypto from 'node:crypto';
+import { CONTEXT_DEFAULTS, validateContextPatch } from './context-settings.mjs';
 
 export const SETUP_PREFIX='/api/memory-brain/setup/';
-const ACTIONS=new Set(['status','initialize','models','start','panel']);
+const ACTIONS=new Set(['status','initialize','models','context','start','panel']);
 const MODEL_FIELDS=new Set(['embed_url','embed_model','embed_key','llm_url','llm_model','llm_key']);
 const LIMIT=16384;
 const failure=error=>{
@@ -36,17 +37,63 @@ function publicRuntime(value={}){
     running:value.running===true,restart_required:value.restart_required===true,error:value.error?failure({code:value.error}):null};
 }
 
-export function createOnboarding({manager,onStart,home='',compatibility='',legacy=false,getAdapterStatus}={}){
+function publicContextManagement(value){
+  if(!value||typeof value!=='object')return null;
+  const textFields=new Set(['state','scope','last_reason','mode','source','estimation_basis',
+    'engine_state','summary_state','pressure_state','pruner_state']);
+  const numberFields=new Set(['trigger_turns','keep_turns','successes','deferred','failures','last_before_tokens','last_after_tokens',
+    'last_compressed_at','timeout_ms','archive_timeout_ms','max_input_tokens','safety_tokens','estimated_tokens','estimated_input_tokens',
+    'estimated_total_tokens','limit','limit_tokens','input_limit','input_limit_tokens','reserved','reserved_tokens','remaining','remaining_tokens',
+    'effective_limit','effective_input_limit','request_tokens','history_tokens','memory_tokens','output_reserve_tokens',
+    'estimated_before_tokens','estimated_after_tokens','estimated_compacted_tokens','context_window_tokens','reserved_output_tokens',
+    'checks','passed','blocked','unguarded','partial','warnings',
+    'agents','summary_max_chars','summary_max_tokens','cooldown_ms','threshold_chars','head_chars','tail_chars',
+    'threshold_ratio','retain_ratio','headroom_tokens','pressure_cooldown_ms',
+    'summaries','pressure_attempts','pressure_deferred','pruned_results','pruned_chars','last_summary_chars']);
+  const booleanFields=new Set(['enabled','available','supported','blocked','estimated','active','stopped']);
+  const clean=source=>{
+    const result={};if(!source||typeof source!=='object')return result;
+    for(const [key,item]of Object.entries(source)){
+      if(textFields.has(key)&&typeof item==='string'&&/^[a-zA-Z0-9_:.-]{0,100}$/.test(item))result[key]=item;
+      else if(numberFields.has(key)&&(item===null||typeof item==='number'&&Number.isFinite(item)&&item>=0))result[key]=item;
+      else if(booleanFields.has(key)&&typeof item==='boolean')result[key]=item;
+    }return result;
+  };
+  const support=value.support;
+  return {...clean(value),compression:clean(value.compression),budget:clean(value.budget),
+    support:{...clean(support),summary:clean(support?.summary),pressure:clean(support?.pressure),
+      tool_pruning:clean(support?.tool_pruning),token_meter:clean(support?.token_meter)}};
+}
+function publicSessionHistory(value){
+  if(!value||typeof value!=='object')return null;
+  const result={};
+  for(const key of ['enabled','available','tool_available','auto_enabled'])if(typeof value[key]==='boolean')result[key]=value[key];
+  for(const key of ['state','last_reason'])if(typeof value[key]==='string'&&/^[a-zA-Z0-9_:.-]{0,100}$/.test(value[key]))result[key]=value[key];
+  for(const key of ['searches','automatic_checks','matches','failures'])if(Number.isFinite(value[key])&&value[key]>=0)result[key]=value[key];
+  return result;
+}
+export function createOnboarding({manager,onStart,home='',compatibility='',legacy=false,getAdapterStatus,getContextSettings,saveContextSettings}={}){
   const csrfToken=crypto.randomBytes(32).toString('base64url');
   const diagnosticOnly=compatibility?.supported===false;
   let disposed=false,busy=false,operation=null,lastError=null,connected=false,task=null;
   async function status(){
     let runtime;try{runtime=publicRuntime(await manager.status());}catch(error){runtime=publicRuntime({state:'error',error:failure(error)});}
     const adapter=typeof getAdapterStatus==='function'?getAdapterStatus():null;
+    let adapterSnapshot;try{adapterSnapshot=adapter?.status?.();}catch{/* diagnostics are optional */}
     const enabled=!diagnosticOnly&&(typeof getAdapterStatus==='function'?adapter?.enabled===true:connected);
+    let context=null,contextManagement=null;
+    if(!diagnosticOnly){
+      if(typeof getContextSettings==='function')try{
+        const value=await getContextSettings();
+        const settings={...CONTEXT_DEFAULTS,...validateContextPatch(value?.settings)};
+        if(settings.contextKeepTurns>=settings.contextTriggerTurns)throw invalid('context_keep_must_be_below_trigger');
+        context={settings,restart_required:value?.restart_required===true};
+      }catch(error){lastError=failure(error);}
+      try{contextManagement=publicContextManagement(adapterSnapshot?.context_management);}catch{/* optional observed capability */}
+    }
     return {phase:disposed?'closed':diagnosticOnly?'compatibility_required':busy?'working':enabled?'connected':runtime.installed_version?'ready':'not_initialized',
       operation,busy,error:lastError||runtime.error,csrfToken,runtime,home,compatibility,legacy,
-      adapter:{enabled}};
+      context,adapter:{enabled,context_management:contextManagement,session_history:diagnosticOnly?null:publicSessionHistory(adapterSnapshot?.session_history)}};
   }
   function enqueue(name,action){
     if(disposed)return reply(410,'setup_closed',false);
@@ -82,6 +129,11 @@ export function createOnboarding({manager,onStart,home='',compatibility='',legac
       if(fields.some(key=>!MODEL_FIELDS.has(key))||fields.some(key=>typeof body[key]!=='string')||!fields.length)
         return reply(400,'invalid_model_fields',false);
       return enqueue(action,()=>manager.saveModels(body));
+    }
+    if(action==='context'){
+      if(typeof saveContextSettings!=='function'||!fields.length)return reply(400,'context_settings_unavailable',false);
+      try{validateContextPatch(body);}catch(error){return reply(400,failure(error),false);}
+      return enqueue(action,()=>saveContextSettings(body));
     }
     if(fields.length)return reply(400,'unexpected_fields',false);
     if(action==='start')return enqueue(action,async()=>{await onStart();});

@@ -14,6 +14,26 @@ window.__ModuleLoader__.load({
       ['llm_model', '整理模型名称', 'text', '填写服务实际提供的模型名'],
       ['llm_key', '整理服务新密钥', 'password', '留空保留已保存的密钥'],
     ];
+    const contextFlags = {
+      contextSummaryEnabled: '启用简洁中文摘要（保留宿主已有自定义摘要）',
+      contextToolPruneEnabled: '裁剪过长的工具结果',
+      historyEnabled: '启用当前会话历史回查工具',
+      historyAutoEnabled: '明确询问历史且记忆召回为空时，自动按字面回查',
+    };
+    const contextNumbers = [
+      ['contextSummaryMaxChars', '摘要目标字数', 200, 20000, 2000],
+      ['contextSummaryMaxTokens', '摘要输出上限（tokens）', 128, 65536, 4096],
+      ['contextPressureCooldownMs', '压力整理冷却（毫秒；0 为关闭）', 0, 300000, 60000],
+      ['contextPressureThresholdRatio', '压力整理窗口比例（0.01～0.99）', 0.01, 0.99, 0.8],
+      ['contextPressureRetainRatio', '压力整理原文保留比例（小于触发比例）', 0.01, 0.99, 0.16],
+      ['contextPressureHeadroomTokens', '压力整理预留余量（tokens）', 128, 65536, 4096],
+      ['contextToolPruneThresholdChars', '工具结果裁剪起点（字符）', 128, 1048576, 4096],
+      ['contextToolPruneHeadChars', '工具结果保留开头（字符）', 0, 1048575, 2048],
+      ['contextToolPruneTailChars', '工具结果保留结尾（字符）', 0, 1048575, 512],
+      ['historyTimeoutMs', '历史回查等待上限（毫秒）', 100, 10000, 2000],
+    ];
+    const extraContextDefaults = { ...Object.fromEntries(Object.keys(contextFlags).map(key => [key, true])),
+      ...Object.fromEntries(contextNumbers.map(([key, , , , value]) => [key, String(value)])) };
     const styles = {
       root: { color: 'inherit', fontSize: 14, lineHeight: 1.6, maxWidth: 1000, margin: '0 auto', padding: '16px 12px 24px' },
       muted: { opacity: 0.72, margin: '6px 0 12px' },
@@ -49,6 +69,16 @@ window.__ModuleLoader__.load({
         setup_busy: '另一项操作仍在进行，请等待状态更新后重试。',
         model_url_invalid: '服务地址需要使用 HTTP 或 HTTPS，不能在地址中携带密钥、账号或查询参数。',
         model_keys_require_environment_on_this_platform: '此平台请使用环境变量提供密钥；本页的加密密钥保存目前仅支持 Windows。',
+        context_settings_fields_invalid: '上下文设置包含无法识别的项目，请重新检查页面。',
+        context_settings_value_invalid: '请按输入框标注的范围填写整数。',
+        context_keep_must_be_below_trigger: '保留轮数需要小于触发整理的轮数。',
+        context_tool_prune_retention_invalid: '工具结果保留的开头、结尾，加上39字符的裁剪提示，不能超过裁剪起点。',
+        context_pressure_retention_invalid: '压力整理的原文保留比例，需要小于触发比例。',
+        context_settings_schema_invalid: '已有上下文设置文件格式异常，已保留现场，请检查后重试。',
+        context_settings_symlink_refused: '上下文设置位置使用了不受支持的链接，已暂停保存。',
+        context_settings_file_invalid: '上下文设置文件类型或大小异常，已暂停读取和保存。',
+        context_settings_io_failed: '无法读取或保存上下文设置，请检查本机用户目录的权限。',
+        finish_current_chat_before_applying_context: '请先等当前对话结束，再应用上下文设置。',
       };
       if (typeof value === 'string' && value.trim()) return explanations[value] || value.slice(0, 600);
       if (value && typeof value === 'object') {
@@ -97,7 +127,7 @@ window.__ModuleLoader__.load({
         reason: code(compatibility.reason) || 'host_build_unverified',
         plugin_version: version(compatibility.plugin_version), node_version: version(compatibility.node_version),
         platform: code(compatibility.platform), arch: code(compatibility.arch), modules: {} };
-      for (const name of ['loop', 'session', 'llm', 'tools', 'connection']) {
+      for (const name of ['loop', 'session', 'llm', 'tools', 'connection', 'compaction', 'basicCompaction', 'toolResultPruner', 'tokenMeter', 'cordis']) {
         const item = compatibility.modules?.[name];
         if (!item || typeof item !== 'object') continue;
         result.modules[name] = { version: version(item.version), sha256: digest(item.sha256) };
@@ -114,6 +144,7 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState('');
       const [pending, setPending] = useState(false);
       const [values, setValues] = useState(() => Object.fromEntries(fields.map(([key]) => [key, ''])));
+      const [contextValues, setContextValues] = useState({ contextEnabled: true, contextTriggerTurns: '12', contextKeepTurns: '4', contextMaxInputTokens: '', contextSafetyTokens: '2048', ...extraContextDefaults });
       const [panelLink, setPanelLink] = useState('');
       const [manualDiagnosticCopy, setManualDiagnosticCopy] = useState(false);
       const [diagnosticCopyNotice, setDiagnosticCopyNotice] = useState('');
@@ -122,6 +153,7 @@ window.__ModuleLoader__.load({
       const pendingRef = useRef(false);
       const statusRef = useRef(null);
       const statusAbort = useRef(null);
+      const contextDirty = useRef(false);
 
       const refresh = useCallback(() => {
         if (statusFlight.current) return statusFlight.current;
@@ -132,6 +164,15 @@ window.__ModuleLoader__.load({
           if (!alive.current) return;
           statusRef.current = data;
           setStatus(data);
+          if (!contextDirty.current && data.context?.settings) {
+            const policy = data.context.settings;
+            setContextValues({ contextEnabled: policy.contextEnabled === true,
+              contextTriggerTurns: String(policy.contextTriggerTurns), contextKeepTurns: String(policy.contextKeepTurns),
+              contextMaxInputTokens: policy.contextMaxInputTokens === null ? '' : String(policy.contextMaxInputTokens),
+              contextSafetyTokens: String(policy.contextSafetyTokens),
+              ...Object.fromEntries(Object.keys(contextFlags).map(key => [key, policy[key] === true])),
+              ...Object.fromEntries(contextNumbers.map(([key]) => [key, String(policy[key])])) });
+          }
           setNetworkError('');
         }).catch(err => {
           if (alive.current) setNetworkError(err.name === 'AbortError' ? '检查状态超时，可以重新检查。' : err.message);
@@ -158,7 +199,14 @@ window.__ModuleLoader__.load({
       const pythonMissing = runtime.python?.available === false;
       const prepared = runtime.state === 'ready' || Boolean(runtime.installed_version);
       const active = status?.adapter?.enabled === true;
-      const operationText = typeof operation === 'string' ? ({ initialize: '正在准备运行环境与依赖…', models: '正在保存本机模型配置…', start: '正在启动并连接独立内核…' }[operation] || operation) : message(operation, '');
+      const contextPolicy = status?.context;
+      const contextObserved = status?.adapter?.context_management || {};
+      const compression = contextObserved.compression || {};
+      const budget = contextObserved.budget || {};
+      const support = contextObserved.support || {};
+      const history = status?.adapter?.session_history || {};
+      const restartRequired = runtime.restart_required === true || contextPolicy?.restart_required === true;
+      const operationText = typeof operation === 'string' ? ({ initialize: '正在准备运行环境与依赖…', models: '正在保存本机模型配置…', context: '正在保存上下文设置…', start: '正在连接并检查记忆插件…' }[operation] || operation) : message(operation, '');
       const phaseText = active ? '已接入 DSH' : runtime.running ? '内核已启动，等待接入 DSH' : prepared ? '环境已准备，等待启用' : '等待首次准备';
       const legacy = status?.legacy === true;
       const readOnlyDiagnostic = diagnosticOnly(status?.compatibility);
@@ -177,6 +225,7 @@ window.__ModuleLoader__.load({
           const result = await request(action, { body, csrf: statusRef.current?.csrfToken });
           if (!alive.current) return;
           if (action === 'models') setValues(current => ({ ...current, embed_key: '', llm_key: '' }));
+          if (action === 'context') contextDirty.current = false;
           setNotice(success);
           await refresh();
           return result;
@@ -194,6 +243,67 @@ window.__ModuleLoader__.load({
         for (const [key] of fields) if (values[key].trim()) body[key] = values[key].trim();
         if (!Object.keys(body).length) { setNotice('没有填写新的配置；已有配置保持不变，也可以先跳过模型配置。'); return; }
         await perform('models', body, '模型配置已提交，正在检查结果。密钥留空时保留原值。');
+      }
+
+      async function saveContext(event) {
+        event.preventDefault();
+        const integer = value => /^\d+$/.test(value) ? Number(value) : NaN;
+        const decimal = value => /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : NaN;
+        const body = { contextEnabled: contextValues.contextEnabled,
+          contextTriggerTurns: integer(contextValues.contextTriggerTurns), contextKeepTurns: integer(contextValues.contextKeepTurns),
+          contextMaxInputTokens: contextValues.contextMaxInputTokens === '' ? null : integer(contextValues.contextMaxInputTokens),
+          contextSafetyTokens: integer(contextValues.contextSafetyTokens),
+          ...Object.fromEntries(Object.keys(contextFlags).map(key => [key, contextValues[key]])),
+          ...Object.fromEntries(contextNumbers.map(([key]) => [key, key.endsWith('Ratio') ? decimal(contextValues[key]) : integer(contextValues[key])])) };
+        if (!Number.isInteger(body.contextTriggerTurns) || body.contextTriggerTurns < 2 || body.contextTriggerTurns > 200 ||
+            !Number.isInteger(body.contextKeepTurns) || body.contextKeepTurns < 1 || body.contextKeepTurns >= body.contextTriggerTurns ||
+            body.contextMaxInputTokens !== null && (!Number.isInteger(body.contextMaxInputTokens) || body.contextMaxInputTokens < 256 || body.contextMaxInputTokens > 4194304) ||
+            !Number.isInteger(body.contextSafetyTokens) || body.contextSafetyTokens < 256 || body.contextSafetyTokens > 65536) {
+          setError('请检查轮数与输入预算：触发 2～200 轮，保留至少 1 轮且少于触发轮数；预算需在标注范围内。'); return;
+        }
+        if (contextNumbers.some(([key, , min, max]) => !(key.endsWith('Ratio') ? Number.isFinite(body[key]) : Number.isInteger(body[key])) || body[key] < min || body[key] > max)) {
+          setError('请按标注范围填写压缩、工具裁剪与历史回查设置。'); return;
+        }
+        if (body.contextToolPruneHeadChars + 39 + body.contextToolPruneTailChars > body.contextToolPruneThresholdChars) {
+          setError('工具结果保留的开头、结尾，加上39字符的裁剪提示，不能超过裁剪起点。'); return;
+        }
+        if (body.contextPressureRetainRatio >= body.contextPressureThresholdRatio) {
+          setError('压力整理的原文保留比例，需要小于触发比例。'); return;
+        }
+        await perform('context', body, '上下文设置已提交。保存后先结束当前对话，再应用配置并重新连接。');
+      }
+
+      function contextInput(label, key, min, max, placeholder) {
+        return h('label', { key, style: styles.label }, h('span', null, label), h('input', {
+          type: 'number', name: key, min, max, step: key.endsWith('Ratio') ? 0.01 : 1, value: contextValues[key], placeholder,
+          disabled: working || !contextPolicy, style: styles.input,
+          onChange: event => { contextDirty.current = true; const value = event.target.value; setContextValues(current => ({ ...current, [key]: value })); },
+        }));
+      }
+      function contextToggle(label, key) {
+        return h('label', { key, style: { ...styles.row, marginBottom: 10 } }, h('input', {
+          type: 'checkbox', checked: contextValues[key], disabled: working || !contextPolicy,
+          onChange: event => { contextDirty.current = true; const checked = event.target.checked; setContextValues(current => ({ ...current, [key]: checked })); },
+        }), label);
+      }
+      function contextState(value) {
+        const states = { waiting_agent: '等待实际对话确认能力', ready: '已确认，可按设置整理', disabled: '已关闭', stopped: '已停止',
+          unsupported_service: '当前对话未提供原生压缩服务', unsupported_module: '当前宿主边界接口尚未核验', unsupported: '当前对话暂不支持',
+          waiting_archive: '等待原话归档确认，暂不压缩', archive_pending: '等待原话归档确认，暂不压缩',
+          compacting: '正在整理历史', compressing: '正在整理历史', failed: '本次整理失败，保留原历史',
+          waiting_complete_turns: '等待足够的完整回合', changed: '历史发生变化，本次暂缓', busy: '宿主正在处理其它维护，本次暂缓',
+          timed_out: '本次整理超时，保留原历史', cancelled: '本次整理已取消', not_started: '等待插件启用',
+          error: '本次处理未完成，保留原历史', budget_blocked: '预计输入超过预算，本轮已暂停', blocked: '预计输入超过预算，本轮已暂停',
+          within_budget: '预计输入在预算内', allowed: '预计输入在预算内', unknown: '等待本轮估算', unavailable: '当前无法确认',
+          unmeasured: '尚无本轮估算', waiting_request: '等待本轮请求估算', awaiting_request: '等待本轮请求估算', checked: '已完成本轮估算',
+          needs_capacity: '缺少模型窗口信息，预算校验不完整', needs_output_reserve: '缺少输出预留信息，预算校验不完整',
+          partial_non_text: '包含非文本材料，估算不完整', estimated_text_json_bytes: '已按文本与请求结构估算',
+          not_observed: '等待实际对话确认', short_chinese: '简洁中文摘要已接入', host_custom: '保留宿主自定义策略',
+          host_existing: '沿用宿主已有服务', owned_native: '已接入包内配套的原生服务',
+          host_auto_disabled: '宿主已关闭自动压力整理', cooldown: '压力整理冷却中',
+          needs_config: '模型窗口或预留不足，需要调整配置', partial: '部分能力可用，请查看具体状态',
+          waiting_tools: '等待宿主工具服务', no_authorized_match: '本次未找到获准回读的原话', matched: '已找到获准回读的原话' };
+        return states[value] || '尚未完成本轮确认';
       }
 
       async function openPanel() {
@@ -288,11 +398,39 @@ window.__ModuleLoader__.load({
               h('button', { type: 'submit', disabled: working || !status || !prepared, style: { ...styles.button, opacity: working || !status || !prepared ? 0.5 : 1 } }, '保存填写的配置'),
               button('暂时跳过模型配置', () => setNotice('可以先启用基础原话和词法检索，之后再回这里配置模型。'))))),
         h('section', { style: styles.section },
-          h('h3', { style: styles.heading }, '3 · 启用并打开面板'),
+          h('h3', { style: styles.heading }, '3 · 上下文管理'),
+          h('p', { style: styles.muted }, '默认累计 12 轮真实用户对话后尝试整理较早历史，保留最近 4 个完整回合。原话归档确认后才压缩，失败时保留原历史。'),
+          h('p', { style: styles.muted }, '自带简洁中文摘要、压力整理冷却与工具结果裁剪，已有自定义宿主策略优先保留。摘要可能额外调用模型并计费；能力以实际状态为准。'),
+          h('p', { role: 'status' }, '原生压缩：', contextState(compression.state || contextObserved.state || 'waiting_agent')),
+          h('p', { role: 'status', style: styles.muted }, '摘要：', contextState(support.summary_state || 'not_observed'),
+            '；压力策略：', contextState(support.pressure_state || 'not_observed'), '；工具裁剪：', contextState(support.pruner_state || 'not_observed')),
+          h('p', { role: 'status', style: styles.muted }, '当前会话历史回查：', contextState(history.state || 'not_observed')),
+          h('p', { role: 'status', style: styles.muted }, '输入预算：', contextState(budget.last_reason === 'memory_brain_context_budget_exceeded' ? 'budget_blocked' : budget.state || budget.scope || 'awaiting_request'),
+            Number.isFinite(budget.estimated_input_tokens ?? budget.estimated_tokens) ? `；预计 ${budget.estimated_input_tokens ?? budget.estimated_tokens} tokens` : '',
+            Number.isFinite(budget.limit_tokens ?? budget.input_limit_tokens ?? budget.limit) ? `；上限 ${budget.limit_tokens ?? budget.input_limit_tokens ?? budget.limit} tokens` : ''),
+          !contextPolicy ? h('p', { style: styles.notice }, '上下文设置暂未就绪，请重新检查状态。') : h('form', { onSubmit: saveContext },
+            h('label', { style: { ...styles.row, marginBottom: 12 } }, h('input', {
+              type: 'checkbox', checked: contextValues.contextEnabled, disabled: working,
+              onChange: event => { contextDirty.current = true; const checked = event.target.checked; setContextValues(current => ({ ...current, contextEnabled: checked })); },
+            }), '启用轮数整理与输入预算检查'),
+            h('div', { style: styles.row }, contextInput('触发整理轮数（2～200）', 'contextTriggerTurns', 2, 200),
+              contextInput('保留完整回合数（小于触发轮数）', 'contextKeepTurns', 1, 199)),
+            h('details', null, h('summary', { style: { cursor: 'pointer', marginBottom: 10 } }, '高级：输入预算'),
+              h('p', { style: styles.muted }, '上限留空时使用宿主提供的限制；额度为估算值，仍需遵守所配模型的实际窗口。'),
+              h('div', { style: styles.row }, contextInput('输入预算上限（256～4194304 tokens，可留空）', 'contextMaxInputTokens', 256, 4194304, '使用宿主限制'),
+                contextInput('安全余量（256～65536 tokens）', 'contextSafetyTokens', 256, 65536))),
+            h('details', null, h('summary', { style: { cursor: 'pointer', marginBottom: 10 } }, '压缩细节与历史回查'),
+              Object.entries(contextFlags).map(([key, label]) => contextToggle(label, key)),
+              h('p', { style: styles.muted }, '短摘要字数是模型目标，不能保证精确。工具裁剪使用原生机制并保留原日志；历史回查遵守接收范围、删除与披露设置。已有宿主自定义策略可能继续使用其自身参数。'),
+              h('div', { style: styles.row }, contextNumbers.map(([key, label, min, max]) => contextInput(label, key, min, max)))),
+            h('button', { type: 'submit', disabled: working || !status, style: { ...styles.button, opacity: working || !status ? 0.5 : 1 } }, '保存上下文设置'))),
+        h('section', { style: styles.section },
+          h('h3', { style: styles.heading }, '4 · 启用并打开面板'),
           h('p', { style: styles.muted }, active ? 'DSH 接入已启用。面板可查看实际入库、索引和后台任务状态；这不代表历史对话已经自动迁入。' : '准备完成后启用。只有状态确认接入 DSH 后，才开始按当前设置处理新对话。'),
           runtime.restart_required ? h('p', { style: styles.notice }, '新模型配置尚未生效。请先结束当前对话，再点击“应用配置并重新连接”；只重启本插件自己的内核，不重启 DSH。') : null,
+          contextPolicy?.restart_required && !runtime.restart_required ? h('p', { style: styles.notice }, '新的上下文设置尚未应用。请先结束当前对话，再点击“应用配置并重新连接”；本次只重新连接记忆插件。') : null,
           h('div', { style: styles.row },
-            button(runtime.restart_required ? '应用配置并重新连接' : active ? '检查并启用' : '启用忆核大脑', () => perform('start', {}, '启用任务已提交，正在检查实际接入状态。'), { primary: true, disabled: working || !status || !prepared }),
+            button(restartRequired ? '应用配置并重新连接' : active ? '检查并启用' : '启用忆核大脑', () => perform('start', {}, '启用任务已提交，正在检查实际接入状态。'), { primary: true, disabled: working || !status || !prepared }),
             button('打开 3D 大脑与控制面板', openPanel, { disabled: working || !status || runtime.running !== true })),
           panelLink ? h('p', null, h('a', { href: panelLink, target: '_blank', rel: 'noopener noreferrer', onClick: () => setTimeout(() => setPanelLink(''), 0) }, '浏览器阻止了弹窗，点击这里打开本机面板')) : null,
           status?.compatibility?.error ? h('p', { role: 'alert', style: styles.error }, message(status.compatibility.error, '当前 DSH 构建尚未通过兼容检查，暂未启用。')) : null));

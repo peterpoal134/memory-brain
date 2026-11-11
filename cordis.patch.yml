@@ -7,3 +7,17 @@
         enabled: true
         autoStart: true
         queueNamespace: default
+        contextEnabled: true
+        contextTriggerTurns: 12
+        contextKeepTurns: 4
+        contextSummaryEnabled: true
+        contextSummaryMaxChars: 2000
+        contextSummaryMaxTokens: 4096
+        contextPressureCooldownMs: 60000
+        contextPressureThresholdRatio: 0.8
+        contextPressureRetainRatio: 0.16
+        contextPressureHeadroomTokens: 4096
+        contextToolPruneEnabled: true
+        contextToolPruneThresholdChars: 4096
+        contextToolPruneHeadChars: 2048
+        contextToolPruneTailChars: 512

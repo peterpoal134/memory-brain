@@ -48,7 +48,7 @@
 - Python 包 `xiaojiu_brain` 与 `python -m xiaojiu_brain` 命令。
 - 发行包、DSH 插件和既有环境变量中的 `xiaojiu` / `XIAOJIU_*` 技术 ID。
 - 浏览器键 `xiaojiu.management.token` 仅用于旧版登录的自动迁移，之后删除；新版本使用HttpOnly浏览器会话。
-- 旧安装的兼容启动文件名及既有数据目录。
+- 既有数据目录与内部命令继续兼容；当前公开包仅提供“打开忆核大脑”和“停止忆核大脑”入口。
 
 控制页标题、登录页、页脚和默认下载名使用新名称；导出名为 `memory-brain-export-日期.json`，备份的客户端下载名也使用中性名称。下载名调整不重命名服务端备份标识，也不改备份内容。
 

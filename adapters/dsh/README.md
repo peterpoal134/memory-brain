@@ -4,8 +4,8 @@
 
 ## 普通安装：使用公开包入口
 
-1. 将完整公开包解压到固定、可写目录，先运行根目录 `install.cmd`，准备独立Python `.venv` 和本机 `private/config.json`。不要分享使用后的这些私人运行文件。
-2. 在独立测试profile的原生插件管理页选择“安装已有插件”，输入完整解压目录的 `link:` 路径，例如 `link:<解压目录绝对路径>`。根 `package.json` 通过 `dsh.bundle.patch` 加载 **`adapters/dsh/memory-brain.mjs`**，这是UI安装的公开入口，不是下层 `xiaojiu-brain.mjs`。
+1. 将完整公开包解压到固定、可写目录，先运行根目录 `安装.cmd`，准备独立Python `.venv` 和本机 `private/config.json`。不要分享使用后的这些私人运行文件。
+2. 在独立测试profile的原生插件管理页选择“安装已有插件”，输入完整解压目录的 `link:` 路径，例如 `link:D:/MemoryBrain`。根 `package.json` 通过 `dsh.bundle.patch` 加载 **`adapters/dsh/memory-brain.mjs`**，这是UI安装的公开入口，不是下层 `xiaojiu-brain.mjs`。
 3. 公开入口从本机配置读取服务地址和管理口令，并在需要时启动独立内核。不要把口令写进聊天、URL或公开的profile配置。普通npm/tgz复制安装不能带上原目录的 `.venv/private`；本地安装请link已经初始化的完整目录。
 4. 关闭其它同用途的写入和召回插件，防止重复；保留角色本身。公开入口先核验宿主：已有快照支持走 `native_snapshot`；精确已知的stock构建可走插件内 `scoped_agent_bridge`；未知构建拒绝启动。该桥是受限进程内兼容适配，**不是官方原生hook**，不修改ASAR、宿主文件或全局原型。详见 [桌面兼容说明](../../docs/DSH-DESKTOP-COMPAT.md)。
 
@@ -21,7 +21,7 @@ queueNamespace: default
 
 ## 高级程序接口：底层适配器
 
-`xiaojiu-brain.mjs` 继续提供 `createAdapter(ctx, config)`、`getAdapter(ctx)` 及低层插件接口，供已有独立服务的程序化集成和合成测试使用。它不是给插件管理UI直接安装的单文件包；公开入口负责本机配置、运行时核验和受限桥的选择。高级调用方必须明确提供已验证的请求快照通道，不得绕开宿主兼容检查后冒充完整接入。
+`xiaojiu-brain.mjs` 继续提供 `createAdapter(ctx, config)`、`getAdapter(ctx)` 及低层插件接口，供已有独立服务的程序化集成使用。它不是给插件管理UI直接安装的单文件包；公开入口负责本机配置、运行时核验和受限桥的选择。高级调用方必须明确提供已验证的请求快照通道，不得绕开宿主兼容检查后冒充完整接入。
 
 以下配置及参数表**仅针对底层接口**，不应复制到公开包的管理器配置；公开入口不接受内联 `baseUrl/token`。底层服务默认地址为 `http://127.0.0.1:18880`，管理口令可通过 `XIAOJIU_BRAIN_TOKEN` 环境变量提供。它是本机服务口令，不是模型API Key。
 
@@ -71,21 +71,11 @@ tokenBudget: 1200
 
 原生工具 `memory_remember_important` 由正常对话模型根据当轮真人的明确要求决定调用，例如用户要求“一定要记住”。没有正则触发器，也没有每轮额外的分类模型请求。普通聊天、情绪表达、检索内容和助手自己的建议不构成保存授权；工具也不能覆盖人格或行为准则。是否理解并调用工具仍取决于聊天模型，不能承诺每次自然语言表达都被正确识别。
 
-工具只能选择当前会话的原始用户消息及其 Unicode 码点片段，不能提交改写后的事实、所有者或会话标识。省略来源时保存当轮原话全文。宿主从真实 `exec.agent.session` 绑定会话和最新用户请求，先等待所有相关原话的持久 ACK，再调用服务；服务再次校验归属、真人来源、时间顺序和片段范围。它不会把助手推测升级为用户事实。若消息缺失、超时或没有明确回执，工具返回可见失败，不允许模型宣称已经记住。
+工具只能选择当前会话的原始用户消息及其 Unicode 码点片段，不能提交改写后的事实、所有者或会话标识。省略来源时保存当轮原话全文。宿主从真实 `exec.agent.session` 绑定会话和最新用户请求，先等待所有相关原话的持久 ACK，再调用服务；服务再次校验归属、真人来源、时间顺序和片段范围。此工具拒绝用助手消息作为用户原话来源。若消息缺失、超时或没有明确回执，工具返回失败状态，并要求聊天模型据此回答；最终回答仍取决于模型是否遵循回执。
 
 正常成功会创建带原话出处的字面事实，确认置顶和重要性 `0.95`；可选 `normal / only_if_asked / never_say` 只允许收紧来源限制。工具不创建秘密主题标签。重复调用同一请求走幂等回执；如果用户随后在面板归档、取消置顶或修改重要性，旧请求重放不会覆盖这些编辑，回执会如实显示当前状态。只有 `confirmed_important=true` 才能说已作为当前重点记忆保存。
 
 工具服务尚未加载时，原话和召回继续工作；适配器通过可选的 Cordis 依赖等待 `tools`，就绪后注册，卸载时清理。状态中的 `important_tool` 区分等待、就绪和不可用。旧服务没有此端点时会明确报失败，不伪造成功。工具说明、调用结果和可能的正常工具续轮会占用聊天上下文；这里不承诺零 tokens。
-
-验证原生 ToolRuntime、真实 Session 与 AgentLoop 的合成闭环：
-
-```powershell
-$env:DSH_TOOLS_MODULE = '<当前安装>/node_modules/@deepseek-ai/dsh-tools/lib/index.js'
-# 同时提供下方验证段中的 DSH_SESSION_MODULE 和 DSH_CONTEXT_MODULE
-node tests/test_important_tool.mjs
-```
-
-测试只用本地合成协议回应，不调用真实模型、不修改正式原话或配置；没有指定同一套运行时模块时会明确 SKIP。
 
 ## 写入和检索的边界
 
@@ -98,7 +88,7 @@ node tests/test_important_tool.mjs
 - 本轮用户问题先进入持久队列，在总预算内按顺序等待服务确认，再带 `current_message_id` 检索。服务能排除本条问题，避免把题干当成旧记忆。尚未确认就省略本轮记忆检索，不按文本猜测定位；独立角色和生活状态请求不等待此ACK。
 - `agent/pre-step` 保留其他插件的决定，只把新证据放进返回的 `requestMessages`；不会调用 Session.append 写入证据。同一问题的工具步骤复用结果，避免重复调用和重复段落。
 - 公开入口在stock兼容模式下由受限桥消费**最终**pre-step决议，不以较早监听器暂存的段落覆盖外层插件决定。桥只绑定经核验的当前agent实例、turn、step和取消信号，在本次冻结请求中追加消息；工具续步仍使用按真人消息ID缓存的同一批材料。它不修改宿主文件、全局AgentLoop原型或Session日志。
-- 后端断服、超时或身份不明会留下可见降级代码，同时放行聊天。不会编造“已想起”。
+- 后端断服、超时或身份不明会留下可见降级代码，同时放行聊天；适配器不返回成功召回状态。最终回答模型仍可能忽略状态，应结合实际回执判断。
 
 补采依赖宿主仍保留原始日志，并且该 Session 曾在当前进程准备或恢复。已被宿主永久移除、且从未入队的事件不能恢复；从未重新打开的其他历史会话不被全盘扫描。本版不宣称在磁盘损坏或断电下达到 exactly-once。
 
@@ -124,30 +114,6 @@ node tests/test_important_tool.mjs
 
 一个队列目录只允许一个写入进程。服务地址变化时须使用新队列目录，防止把旧原话误送到另一后端。不要在进程运行时手动删除 `writer.lock`。停止插件会还原自己安装的 Session 包装器，等待当前投递退出后释放自己的锁。
 
-## 验证
-
-基础队列与过滤检查不需要 DSH：
-
-```powershell
-node tests/test_plugin.mjs
-```
-
-运行真实 SessionStore 集成时，显式指定当前安装中的两个模块（不要把自己的机器路径写入源码）：
-
-```powershell
-$env:DSH_SESSION_MODULE = '<当前安装>/node_modules/@deepseek-ai/dsh-session/lib/index.js'
-$env:DSH_CONTEXT_MODULE = '<当前安装>/node_modules/@deepseek-ai/cordis/lib/index.js'
-node tests/test_plugin.mjs
-```
-
-测试使用新建临时队列、真实 SessionStore 的 prepare/append/持久日志恢复，以及本地 HTTP 协议服务，不访问正式库。覆盖严格 ACK、失败保留、容量缺口顺序、稳定 ID、源过滤、助手真实承诺、当前消息确认、请求证据不进历史、工具步复用和有界降级。没有提供模块时，集成部分会明确打印 SKIP，不能把它当成真实 DSH 全部通过。
-
-这组测试验证适配器契约，不等于完整 AgentLoop 已消费证据，也不等于跨天记忆能力分数。发布验收还应使用独立宿主与新服务完成一次“写入→关闭历史窗口→新请求回想→追到原话”的实际闭环。
-
-本仓库另有 `tests/integration/run.mjs`，通过 `DSH_RUNTIME` 指定只读安装目录，使用真实 AgentLoop、SessionStore、工具调度和新大脑随机端口服务，向本地假模型协议端点发送实际请求。它核对首次请求、工具后请求、当前问题排除、原话顺序、幂等、推理与工具过滤、历史无注入及运行时文件哈希。配套 `brain_fixture.py` 随测试源码交付，运行时新建临时合成数据；无需既有 artifacts。所有数据为合成，不调用真实模型，不代表记忆测评提分。
-
-完整集成还通过真实 `ctx.plugin(module)` 加载并等待该版本 Cordis 的 `fiber.await()`，确认 ACTIVE；卸载时确认自身会话钩子恢复、队列锁释放。插件 `apply()` 不返回控制器对象（那不符合 Cordis Effect 契约）；`createAdapter()` 和 `getAdapter()` 是独立控制/测试接口。
-
 ## 来源说明
 
-持久队列的设计借鉴已验证过的 `fish-rawqueue` 不变量：先落盘、严格 ACK、恢复序号、未送达不清理。代码在新协议下重新实现，没有导入旧插件、旧数据、旧运行路径或旧的题目特定检索规则。
+持久队列遵循先落盘、严格 ACK、恢复序号和未送达记录保留的约束。当前实现使用独立协议，不依赖其它记忆插件或用户的既有运行目录。

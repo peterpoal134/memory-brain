@@ -1,20 +1,22 @@
 """Build a complete, positively selected public DSH release, never zip a worktree.
 
-No private configuration, data, evaluation reports or host runtime
+No private configuration, data, benchmarks, operational reports or host runtime
 are included. The kernel wheel is built from this same sanitized source stage.
 """
-from pathlib import Path
-import argparse,ast,datetime,hashlib,io,json,os,platform,re,runpy,shutil,subprocess,sys,tempfile,zipfile
+from pathlib import Path,PurePosixPath
+import argparse,ast,base64,csv,datetime,hashlib,io,json,os,platform,re,runpy,shutil,subprocess,sys,tempfile,zipfile
+from email.parser import Parser
 
-PUBLIC_DOCS=('BACKGROUND-DERIVATION.md','BRANDING.md','CONTRACT.md','DAILY-STATE-RULES.md',
+PUBLIC_DOCS=('BACKGROUND-DERIVATION.md','CHAT-USAGE.md','BRANDING.md','CONTRACT.md','DAILY-STATE-RULES.md',
     'LIFE-LAYER.md','MEMORY-MAP.md','OBSERVATORY-API.md','PROFILE-IMPORTANT.md','DSH-INSTALL.md',
-    'SEMANTIC-MEMORY.md','TIME-SEMANTICS.md','DSH-DESKTOP-COMPAT.md','DSH-FIRST-RUN.md')
+    'SEMANTIC-MEMORY.md','TIME-SEMANTICS.md','DSH-DESKTOP-COMPAT.md','DSH-FIRST-RUN.md',
+    'RELEASE-0.2.2.md','CONTEXT-MANAGEMENT.md','MAINTENANCE.md')
 PUBLIC_SCRIPTS=('install.ps1','start-local.ps1','open-panel.ps1','connect-dsh.ps1','register-dsh.mjs',
     'verify-package.ps1','build_brain.mjs','build_fallback.py','build_plugin_release.py','build_release.py','dsh_plan.py',
-    'dsh-request-hook.mjs','dsh-compat.ps1','__init__.py','verify_migration.py','build_runtime_wheel.py','dsh-compat-report.mjs')
+    'dsh-request-hook.mjs','dsh-compat.ps1','build_runtime_wheel.py','dsh-compat-report.mjs')
 ROOT_FILES=('README.md','LICENSE','NOTICE.md','pyproject.toml','MANIFEST.in','gitignore.template','package.json','cordis.patch.yml',
-    'install.cmd','open-panel.cmd','stop-brain.cmd','connect-dsh.cmd','remove-dsh.cmd','dsh-compat-check.cmd')
-FORBIDDEN_NAMES={'private','data','artifacts','dist','node_modules','.venv','__pycache__','.git'}
+    '安装.cmd','打开忆核大脑.cmd','停止忆核大脑.cmd','接入DSH.cmd','移除DSH接入.cmd','DSH兼容性检查.cmd')
+FORBIDDEN_NAMES={'private','data','artifacts','dist','node_modules','.venv','__pycache__','.git','tests'}
 FORBIDDEN_SUFFIXES={'.db','.sqlite','.sqlite3','.dpapi','.log','.zstd','.pyc','.pyo','.pem','.key','.exe','.dll'}
 LOCAL_IDENTIFIERS=()
 
@@ -34,7 +36,7 @@ def public_sources(root):
         if wheel.is_symlink() or hashlib.sha256(wheel.read_bytes()).hexdigest()!=entry.get('sha256'):raise RuntimeError('Bundled dependency checksum mismatch')
         files.add(wheel)
     for directory,extensions in [('xiaojiu_brain',{'.py','.html','.css','.js','.svg','.bin','.json','.md'}),
-        ('adapters/dsh',{'.mjs','.md','.json'}),('client',{'.js'}),('tests',{'.py','.mjs'}),('frontend',{'.js','.json','.md'})]:
+        ('adapters/dsh',{'.mjs','.md','.json'}),('client',{'.js'}),('frontend',{'.js','.json','.md'})]:
         for p in (root/directory).rglob('*'):
             if p.is_file() and p.suffix in extensions and not any(part in FORBIDDEN_NAMES or part.startswith('run-') for part in p.relative_to(root).parts):files.add(p)
     missing=[p.relative_to(root).as_posix() for p in files if not p.is_file()]
@@ -90,51 +92,148 @@ def validate_content(name,content,secrets):
 
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
-def verify_extracted_archive(archive,work,test_python):
-    """Run the unchanged Python suite from archive bytes, outside the checkout.
+def release_version(plugin_version,kernel_version):
+    """Map the public channel to PEP 440; rc/stable cannot hide version skew."""
+    match=re.fullmatch(r'(\d+\.\d+\.\d+)(?:-(alpha|beta|rc)\.(\d+))?',plugin_version)
+    if not match:raise RuntimeError('Expected an explicit alpha, beta, rc or stable release version')
+    suffix={'alpha':'a','beta':'b','rc':'rc'}
+    version=match[1]+(suffix[match[2]]+match[3] if match[2] else '')
+    # Historical alpha adapter releases intentionally shared a prior kernel.
+    # Release candidates and stable releases must have one coherent identity.
+    if match[2] not in ('alpha','beta') and kernel_version!=version:
+        raise RuntimeError('Release-candidate/stable kernel and plugin versions differ')
+    return version,match[2] or 'stable'
 
-    Dependencies must be installed in test_python. -I ignores inherited Python
-    paths; the runner explicitly asserts that the kernel comes from extraction.
-    Any error blocks publication. There is no retry/skip/relaxed assertion here.
+def checked_members(archive):
+    """Verify member structure and CRC before consuming an archive."""
+    names=archive.namelist()
+    if len(names)!=len(set(name.casefold() for name in names)):
+        raise RuntimeError('Duplicate or case-colliding archive members')
+    for item in archive.infolist():
+        name=item.filename;parts=PurePosixPath(name).parts
+        if not parts or name.startswith(('/','\\')) or '\\' in name or '..' in parts or ':' in parts[0]:
+            raise RuntimeError('Unsafe archive path')
+        if (item.external_attr>>16)&0o170000==0o120000:
+            raise RuntimeError('Archive symbolic link is not permitted')
+    if archive.testzip() is not None:raise RuntimeError('Archive CRC mismatch')
+    return {name for name in names if not name.endswith('/')}
+
+def verify_wheel(content):
+    """Check a wheel's inventory, RECORD hashes and distribution identity."""
+    with zipfile.ZipFile(io.BytesIO(content)) as wheel:
+        names=checked_members(wheel)
+        records=[name for name in names if name.endswith('.dist-info/RECORD')]
+        if len(records)!=1:raise RuntimeError('Expected one wheel RECORD')
+        record=records[0];rows=list(csv.reader(io.StringIO(wheel.read(record).decode('utf8'))))
+        if any(len(row)!=3 for row in rows):raise RuntimeError('Invalid wheel RECORD row')
+        if len(rows)!=len({row[0] for row in rows}) or {row[0] for row in rows}!=names:
+            raise RuntimeError('Wheel RECORD inventory mismatch')
+        for name,digest,size in rows:
+            blob=wheel.read(name)
+            if name==record:
+                if digest or size:raise RuntimeError('Invalid wheel RECORD self entry')
+                continue
+            if not size or int(size)!=len(blob):raise RuntimeError('Wheel RECORD size mismatch: '+name)
+            if not digest.startswith('sha256='):raise RuntimeError('Wheel member lacks SHA-256: '+name)
+            actual=base64.urlsafe_b64encode(hashlib.sha256(blob).digest()).rstrip(b'=').decode('ascii')
+            if actual!=digest.split('=',1)[1]:raise RuntimeError('Wheel RECORD hash mismatch: '+name)
+        metadata=record.rsplit('/',1)[0]+'/METADATA'
+        if metadata not in names:raise RuntimeError('Wheel distribution metadata missing')
+        fields=Parser().parsestr(wheel.read(metadata).decode('utf8'))
+        if not fields.get('Name') or not fields.get('Version'):raise RuntimeError('Wheel identity missing')
+        return {'name':fields['Name'],'version':fields['Version'],'members':len(names)},names
+
+def verify_extracted_archive(archive,work,verify_python):
+    """Check the exact distribution's integrity, identity and inert imports.
+
+    This creates only an extracted copy of the distribution. It does not start
+    the service, create a database, generate sample conversations or call models.
     """
     destination=Path(tempfile.mkdtemp(prefix='archive-check-',dir=work))
     with zipfile.ZipFile(archive) as z:
-        for name in z.namelist():
-            if not (destination/name).resolve().is_relative_to(destination.resolve()):raise RuntimeError('Unsafe archive path')
+        names=checked_members(z)
+        roots={PurePosixPath(name).parts[0] for name in names}
+        if len(roots)!=1:raise RuntimeError('Expected one public package root')
+        prefix=roots.pop()+'/'
+        manifest=json.loads(z.read(prefix+'SHA256SUMS.json'))
+        if {prefix+name for name in manifest}|{prefix+'SHA256SUMS.json'}!=names:
+            raise RuntimeError('Public archive manifest inventory mismatch')
+        for name,digest in manifest.items():
+            if not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest) or hashlib.sha256(z.read(prefix+name)).hexdigest()!=digest:
+                raise RuntimeError('Public archive manifest hash mismatch: '+name)
+        info=json.loads(z.read(prefix+'PUBLIC-RELEASE.json'))
+        plugin=json.loads(z.read(prefix+'package.json'))
+        adapter=json.loads(z.read(prefix+'adapters/dsh/package.json'))
+        project=re.search(r'^version\s*=\s*"([^"]+)"\s*$',z.read(prefix+'pyproject.toml').decode('utf8'),re.M)
+        if not project:raise RuntimeError('Public kernel version missing')
+        kernel_version=project[1];version,channel=release_version(plugin['version'],kernel_version)
+        if adapter['version']!=plugin['version'] or any(info.get(key)!=value for key,value in
+                {'version':version,'plugin_version':plugin['version'],'kernel_version':kernel_version,'release_channel':channel}.items()):
+            raise RuntimeError('Public archive release identity mismatch')
+        dependencies=json.loads(z.read(prefix+'compat/runtime-dependencies.json'))
+        wheel_names={name for name in names if name.endswith('.whl')}
+        dependency_names={prefix+'wheels/'+entry['filename'] for entry in dependencies['files']}
+        for entry in dependencies['files']:
+            if hashlib.sha256(z.read(prefix+'wheels/'+entry['filename'])).hexdigest()!=entry['sha256']:
+                raise RuntimeError('Bundled dependency checksum mismatch')
+        kernel_wheels=wheel_names-dependency_names
+        if len(kernel_wheels)!=1:raise RuntimeError('Expected one matching kernel wheel')
+        kernel_wheel=kernel_wheels.pop();wheel_results=[]
+        for name in sorted(wheel_names):
+            result,members=verify_wheel(z.read(name));result['file']=name[len(prefix):]
+            wheel_results.append(result)
+            if name!=kernel_wheel:continue
+            if result['name']!='xiaojiu-brain' or result['version']!=kernel_version:
+                raise RuntimeError('Bundled kernel wheel identity mismatch')
+            source_names={name[len(prefix):] for name in names if name.startswith(prefix+'xiaojiu_brain/')}
+            if {name for name in members if name.startswith('xiaojiu_brain/')}!=source_names:
+                raise RuntimeError('Kernel wheel/source inventory mismatch')
+            with zipfile.ZipFile(io.BytesIO(z.read(name))) as wheel:
+                for relative in source_names:
+                    if wheel.read(relative)!=z.read(prefix+relative):raise RuntimeError('Kernel wheel/source mismatch: '+relative)
         z.extractall(destination)
-    roots=list(destination.iterdir())
-    if len(roots)!=1 or not roots[0].is_dir():raise RuntimeError('Expected one public package root')
-    extracted=roots[0]
-    runner='''import pathlib,sys,unittest
+    extracted=destination/prefix.rstrip('/')
+    runner='''import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]).resolve()
+wheel=pathlib.Path(sys.argv[2]).resolve()
+expected=sys.argv[3]
 sys.path.insert(0,str(root))
 import xiaojiu_brain
 assert pathlib.Path(xiaojiu_brain.__file__).resolve().is_relative_to(root), 'Kernel escaped the extracted archive'
-suite=unittest.defaultTestLoader.discover(str(root/'tests'),pattern='test_*.py')
-result=unittest.TextTestRunner(verbosity=2).run(suite)
-print('EXTRACTED_RESULT='+str(result.testsRun)+':'+str(len(result.failures))+':'+str(len(result.errors))+':'+str(len(result.skipped)),flush=True)
-sys.exit(0 if result.wasSuccessful() and not result.skipped else 1)
+assert xiaojiu_brain.__version__==expected, 'Extracted kernel version mismatch'
+assert set(name for name in sys.modules if name.startswith('xiaojiu_brain'))=={'xiaojiu_brain'}, 'Package import started runtime modules'
+del sys.modules['xiaojiu_brain']
+sys.path[0]=str(wheel)
+import xiaojiu_brain
+assert pathlib.Path(xiaojiu_brain.__file__).resolve().is_relative_to(wheel), 'Kernel escaped the bundled wheel'
+assert xiaojiu_brain.__version__==expected, 'Wheel kernel version mismatch'
+assert set(name for name in sys.modules if name.startswith('xiaojiu_brain'))=={'xiaojiu_brain'}, 'Wheel import started runtime modules'
+print('ARTIFACT_IMPORT='+json.dumps({'source_import':True,'wheel_import':True,'version':expected}),flush=True)
 '''
-    env=os.environ.copy();env.update(PYTHONUTF8='1')
-    result=subprocess.run([str(test_python),'-I','-c',runner,str(extracted)],cwd=extracted,env=env,
+    env=os.environ.copy();env.update(PYTHONUTF8='1',PYTHONDONTWRITEBYTECODE='1')
+    result=subprocess.run([str(verify_python),'-I','-B','-c',runner,str(extracted),str(destination/kernel_wheel),kernel_version],cwd=extracted,env=env,
         stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=180)
-    log=work/('extracted-python-tests-'+archive.stem+'.log');log.write_bytes(result.stdout)
-    (work/'extracted-python-tests.log').write_bytes(result.stdout)
-    if result.returncode:raise RuntimeError('Extracted public archive Python tests failed; publication blocked. See extracted-python-tests.log')
-    match=re.search(rb'EXTRACTED_RESULT=(\d+):(\d+):(\d+):(\d+)',result.stdout)
-    if not match or not int(match[1]):raise RuntimeError('Extracted test results missing; publication blocked')
-    return {'tests':int(match[1]),'failures':int(match[2]),'errors':int(match[3]),'skipped':int(match[4]),
-        'source':'freshly_extracted_final_archive','kernel_import_verified':True}
+    log=work/('artifact-verification-'+archive.stem+'.log');log.write_bytes(result.stdout)
+    (work/'artifact-verification.log').write_bytes(result.stdout)
+    if result.returncode:raise RuntimeError('Extracted public artifact import failed; see artifact-verification.log')
+    match=re.search(rb'ARTIFACT_IMPORT=(\{[^\r\n]+\})',result.stdout)
+    if not match:raise RuntimeError('Artifact import verification result missing')
+    imports=json.loads(match[1])
+    if imports!={'source_import':True,'wheel_import':True,'version':kernel_version}:
+        raise RuntimeError('Artifact import verification identity mismatch')
+    return {'scope':'distribution_integrity_versions_and_package_imports','source':'freshly_extracted_final_archive',
+        'archive_crc_verified':True,'manifest_files':len(manifest),'manifest_hashes_verified':True,
+        'package_versions_verified':True,'kernel_source_import_verified':True,'kernel_wheel_import_verified':True,
+        'wheel_source_match_verified':True,'wheel_records_verified':True,'wheels':wheel_results,
+        'service_started':False,'sample_data_generated':False,'model_calls':0}
 
-def build(root,output,test_python=None):
+def build(root,output,verify_python=None,test_python=None):
     global LOCAL_IDENTIFIERS
     root=Path(root).resolve();output=Path(output).resolve();output.mkdir(parents=True,exist_ok=True)
     LOCAL_IDENTIFIERS=local_identifiers(root)
     kernel_version=runpy.run_path(str(root/'xiaojiu_brain/__init__.py'))['__version__']
     plugin_version=json.loads((root/'package.json').read_text('utf-8-sig'))['version']
-    release_match=re.fullmatch(r'(\d+\.\d+\.\d+)-alpha\.(\d+)',plugin_version)
-    if not release_match:raise RuntimeError('Expected an explicit alpha plugin release version')
-    version=release_match[1]+'a'+release_match[2]
+    version,channel=release_version(plugin_version,kernel_version)
     work=root/'artifacts/public-plugin-package';work.mkdir(parents=True,exist_ok=True)
     stage=Path(tempfile.mkdtemp(prefix='stage-',dir=work));secrets=known_secrets(root)
     selected=public_sources(root)
@@ -142,14 +241,20 @@ def build(root,output,test_python=None):
         relative=source.relative_to(root);blob=source.read_bytes();validate_content(relative.as_posix(),blob,secrets)
         dest=stage/relative;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(blob)
     wheels=stage/'wheels';wheels.mkdir(exist_ok=True)
-    env=os.environ.copy();env.update(PIP_DISABLE_PIP_VERSION_CHECK='1',PYTHONUTF8='1')
-    result=subprocess.run([sys.executable,'-m','pip','wheel','--no-deps','--no-index','--no-build-isolation',
-        '--no-cache-dir','--wheel-dir',str(wheels),str(stage)],cwd=work,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
+    build_wheels=Path(tempfile.mkdtemp(prefix='kernel-wheel-',dir=work))
+    env=os.environ.copy();env.update(PYTHONUTF8='1')
+    # The already shipped stdlib builder verifies literal metadata and public
+    # paths. Release assembly must not depend on an unshipped wheel/setuptools
+    # toolchain or download anything into the user's installed environment.
+    result=subprocess.run([sys.executable,'-I',str(stage/'scripts/build_runtime_wheel.py'),
+        '--source',str(stage),'--out',str(build_wheels)],cwd=work,env=env,
+        stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
     (work/'wheel-build.log').write_bytes(result.stdout)
     if result.returncode:raise RuntimeError('Public wheel build failed; see local wheel-build.log')
-    artifacts=list(wheels.glob('xiaojiu_brain-'+kernel_version+'-*.whl'))
+    artifacts=list(build_wheels.glob('xiaojiu_brain-'+kernel_version+'-*.whl'))
     if len(artifacts)!=1:raise RuntimeError('Expected exactly one kernel wheel')
-    wheel=artifacts[0];validate_content('wheels/'+wheel.name,wheel.read_bytes(),secrets)
+    wheel=wheels/artifacts[0].name;shutil.copy2(artifacts[0],wheel)
+    validate_content('wheels/'+wheel.name,wheel.read_bytes(),secrets)
     # Check all package/static members against the same selected source stage.
     with zipfile.ZipFile(wheel) as z:
         for source in selected:
@@ -162,12 +267,27 @@ def build(root,output,test_python=None):
     manifest={p.relative_to(root).as_posix():sha(stage/p.relative_to(root)) for p in selected}
     manifest['wheels/'+wheel.name]=sha(wheel)
     info={'name':'Memory Brain','display_name':'忆核大脑','version':version,'plugin_version':plugin_version,
-        'kernel_version':kernel_version,'build_id':module.build_id(),
+        'kernel_version':kernel_version,'build_id':module.build_id(),'release_channel':channel,
+        'production_ready_claimed':False,
+        'release_kind':'framework_and_reference_implementation',
+        'release_notes':'docs/RELEASE-0.2.2.md',
+        'long_term_stability_validated':False,'cross_hardware_validated':False,
         'created_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':'Windows 10/11',
         'python':'>=3.10','node':'>=22','entry':'adapters/dsh/memory-brain.mjs',
         'dsh_contract':'request-only snapshots via native host contract or verified stock per-agent compatibility bridge',
-        'contains':['kernel_source','kernel_wheel','DSH_adapter','DSH_bundle_manifest','3D_panel','life_and_emotion_rules','synthetic_tests','licenses'],
-        'excludes':['private_config','API_keys','persona_content','chat_history','memory_databases','queue_logs','private_reports','model_weights','DSH_runtime'],
+        'contains':['kernel_source','kernel_wheel','DSH_adapter','DSH_bundle_manifest','context_management',
+            'short_summary_policy','pressure_cooldown','native_tool_result_pruning','permission_checked_session_history',
+            '3D_panel','life_and_emotion_rules','licenses'],
+        'context_management':{'default_enabled':True,'trigger_turns':12,'keep_complete_turns':4,
+            'requires_host_compaction':True,'provides_native_service_when_missing':True,
+            'request_budget':'verified_final_request_text_estimate','exact_tokenizer_claimed':False},
+        'compaction_defaults':{'summary_target_chars':2000,'summary_max_tokens':4096,'pressure_cooldown_ms':60000,
+            'pressure_threshold_ratio':0.8,'pressure_retain_ratio':0.16,'headroom_tokens':4096,
+            'tool_prune_threshold_chars':4096,'tool_prune_head_chars':2048,'tool_prune_tail_chars':512,
+            'preserves_existing_custom_host_strategy':True},
+        'session_history':{'default_enabled':True,'current_session_only':True,'permission_checked':True,
+            'automatic_literal_lookup_when_recall_empty':True},
+        'excludes':['private_config','API_keys','persona_content','chat_history','memory_databases','queue_logs','private_reports','benchmark_answers','model_weights','DSH_runtime'],
         'fresh_install':True,'default_owner':'local-owner','default_cross_conversation':False,
         'dependencies_downloaded_by_installer':[],
         'bundled_runtime_dependencies':['tzdata-2026.6-py2.py3-none-any.whl'],
@@ -183,19 +303,19 @@ def build(root,output,test_python=None):
         for name in z.namelist():validate_content(name,z.read(name),secrets)
         for required in ('package.json','cordis.patch.yml','adapters/dsh/memory-brain.mjs','adapters/dsh/onboarding.mjs','adapters/dsh/runtime-home.mjs','client/client.js','scripts/build_runtime_wheel.py','scripts/register-dsh.mjs','docs/DSH-INSTALL.md','docs/DSH-FIRST-RUN.md','xiaojiu_brain/static/brain-fallback.svg'):
             if prefix+'/'+required not in z.namelist():raise RuntimeError('Release missing '+required)
-    test_result=verify_extracted_archive(archive,work,test_python or sys.executable)
-    # Publish only after both privacy and archive-sourced tests pass.
+    verification=verify_extracted_archive(archive,work,verify_python or test_python or sys.executable)
+    # Publish only after privacy and exact-distribution integrity/import checks.
     os.replace(archive,final_archive);archive=final_archive
     public_report={**info,'archive_name':archive.name,'bytes':archive.stat().st_size,'sha256':sha(archive),
         'files':len(manifest)+1,'credential_scan':'pass','local_identifier_scan':'pass','private_path_policy':'positive_allowlist',
-        'extracted_python_tests':test_result}
+        'artifact_verification':verification}
     report=output/('memory-brain-dsh-'+version+'-public.json');report.write_text(json.dumps(public_report,ensure_ascii=False,indent=2),encoding='utf8')
     local={'archive':str(archive),'stage':str(stage),'wheel':str(wheel),'report':str(report),'sha256':sha(archive),'bytes':archive.stat().st_size,'files':len(manifest)+1}
     (work/'LATEST.json').write_text(json.dumps(local,ensure_ascii=False,indent=2),encoding='utf8');return local
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--out');parser.add_argument('--test-python');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--out');parser.add_argument('--verify-python','--test-python',dest='verify_python');args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
-    print(json.dumps(build(root,args.out or root/'dist',test_python=args.test_python),ensure_ascii=False))
+    print(json.dumps(build(root,args.out or root/'dist',verify_python=args.verify_python),ensure_ascii=False))
 
 if __name__=='__main__':main()

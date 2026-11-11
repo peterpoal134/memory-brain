@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
 $env:PIP_DEFAULT_TIMEOUT = '30'
+$env:PYTHONUTF8 = '1'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot 'verify-package.ps1') -Root $projectRoot
 if (-not (Test-Path -LiteralPath (Join-Path $projectRoot '.gitignore'))) {
@@ -12,16 +13,20 @@ Set-Location -LiteralPath $projectRoot
 $env:TEMP = Join-Path $projectRoot 'tmp'
 $env:TMP = $env:TEMP
 New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+$config = Join-Path $projectRoot 'private\config.json'
+if (Test-Path -LiteralPath $config) {
+  throw 'Existing configuration preserved. This installer does not upgrade or repair a live/old installation. Follow docs/MAINTENANCE.md for a side-by-side upgrade; do not delete configuration or data.'
+}
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) {
   & python -m venv (Join-Path $projectRoot '.venv')
   if ($LASTEXITCODE -ne 0) { throw 'Python 3.10+ is required.' }
 }
-$config = Join-Path $projectRoot 'private\config.json'
-if (Test-Path -LiteralPath $config) {
-  & $python -I -m xiaojiu_brain --config $config status *> $null
-  if ($LASTEXITCODE -eq 0) { throw 'The brain is running. Back up and stop it before upgrading files.' }
-}
+# Do not equate failed status/authentication with proof that an old service is
+# stopped. A pre-existing kernel environment belongs to maintenance as well.
+$previous = & $python -I -c "import importlib.metadata as m; print(m.version('xiaojiu-brain') if list(m.distributions(name='xiaojiu-brain')) else '')"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the existing environment; no packages were changed.' }
+if ($previous) { throw 'An installed kernel already exists. Preserve this environment and use docs/MAINTENANCE.md; this first-install entry never overwrites it.' }
 $wheelDir = Join-Path $projectRoot 'wheels'
 $bundled = @(Get-ChildItem -LiteralPath $wheelDir -Filter 'xiaojiu_brain-*.whl' -ErrorAction SilentlyContinue)
 if ($bundled.Count -gt 1) { throw 'Multiple kernel wheels found; use an intact release package.' }

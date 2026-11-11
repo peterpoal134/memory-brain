@@ -9,14 +9,18 @@ from collections import defaultdict
 import datetime as dt
 import json
 import math
+import re
 import time
+import unicodedata
 import uuid
 from zoneinfo import ZoneInfo
 
 from .policy import POLICY_VERSION, READING_POLICY, bounded_salience, disclosure_decision, estimate_tokens
 from .claims import canonical_claim
-from .relations import relation_candidates
+from .relations import relation_candidates, contextual_candidates
 from .temporal import source_times
+from .due_candidates import due_candidates
+from .update_candidates import update_candidates
 
 
 def _epoch(value):
@@ -55,12 +59,71 @@ def _cosine(a, b):
         return None
 
 
+def _prepare_cosine_query(vector):
+    """Reuse the identical query-side arithmetic for all stored vectors."""
+    if not isinstance(vector, (list, tuple)) or not vector:
+        return None
+    try:
+        values = [float(v) for v in vector]
+        if not all(math.isfinite(x) for x in values):
+            return None
+        scale = max(map(abs, values))
+        if not scale:
+            return None
+        values = [x/scale for x in values]
+        return values, sum(x*x for x in values)
+    except (ValueError, TypeError):
+        return None
+
+
+def _cosine_for_query(prepared, vector):
+    if prepared is None or not isinstance(vector, (list, tuple)) or len(prepared[0]) != len(vector):
+        return None
+    try:
+        values = [float(v) for v in vector]
+        if not all(math.isfinite(x) for x in values):
+            return None
+        scale = max(map(abs, values))
+        if not scale:
+            return None
+        values = [x/scale for x in values]
+        norm = math.sqrt(prepared[1] * sum(x*x for x in values))
+        return sum(x*y for x, y in zip(prepared[0], values)) / norm if norm else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _overlap(a, b):
     return a[0] == b[0] and max(a[1], b[1]) < min(a[2], b[2])
 
 
 def _covered(ref, selected):
     return any(old[0] == ref[0] and old[1] <= ref[1] and old[2] >= ref[2] for old in selected)
+
+
+_CONFLICT_LINE='\n来源线索可能包含不同说法或选项，尚未证明是同一事实或明确更正；请结合原话和时间说明不确定，勿自行选定，不要猜测对象数量、身份关系、变化原因或先后。\n'
+
+
+def _question_options(query):
+    match=re.search(r'是\s*([^，。！？?\n]{2,12}?)\s*还是\s*([^，。！？?\n]{2,12})',str(query))
+    if not match:return None
+    values=[match.group(1).strip(),re.sub(r'(?:来着|来的|呢|呀|啊|吧)$','',match.group(2).strip())]
+    values=[unicodedata.normalize('NFKC',x).casefold() for x in values]
+    if any(not 2<=len(x)<=12 for x in values) or values[0]==values[1]:return None
+    return values
+
+
+def _question_option_sources(query, selected):
+    """Detect options in distinct selected user originals, without proving conflict."""
+    values=_question_options(query)
+    if not values:return False
+    ids=[set(),set()]
+    for item in selected:
+        if item.get('role')!='user' or not item.get('is_original_utterance'):continue
+        text=unicodedata.normalize('NFKC',item.get('text','')).casefold()
+        for i,value in enumerate(values):
+            if value in text:ids[i].update(r['message_id'] for r in item.get('source_refs',[]))
+    return any(a!=b for a in ids[0] for b in ids[1])
 
 
 class Retriever:
@@ -70,6 +133,9 @@ class Retriever:
         self.reranker = reranker
         self.timezone = ZoneInfo(timezone)
         self.allow_cross_conversation = bool(allow_cross_conversation)
+        self.due_candidates_enabled = False
+        self.update_candidates_enabled = False
+        self.contextual_relations_enabled = False
 
     def _iso(self, message):
         stored = (message.get("metadata") or {}).get("recorded_at_iso")
@@ -218,10 +284,11 @@ class Retriever:
                 if len(vectors) != 1 or _cosine(vectors[0], vectors[0]) is None:
                     raise ValueError("invalid query embedding")
                 model = str(self.embedder.model)
+                prepared_query = _prepare_cosine_query(vectors[0])
                 for key, d in eligible.items():
                     if d.get("vector_model") != model:
                         continue
-                    score = _cosine(vectors[0], d.get("vector"))
+                    score = _cosine_for_query(prepared_query, d.get("vector"))
                     if score is not None:
                         similarities[key] = score
                 for kind, route in [(True, "raw_semantic"), (False, "derived_semantic")]:
@@ -236,11 +303,28 @@ class Retriever:
 
         route,relation_trace=relation_candidates(eligible,normalized_claims,query,owner,conversation_id)
         routes['entity_relation']=route;trace['relations']=relation_trace
+        if self.contextual_relations_enabled:
+            route,context_trace=contextual_candidates(eligible,normalized_claims,references,routes,similarities)
+            routes['context_relation']=route;trace['context_relation']=context_trace
+        else:
+            trace['context_relation']={'enabled':False}
+        if self.update_candidates_enabled:
+            route,update_trace=update_candidates(eligible,normalized_claims,references,messages,routes,similarities,query)
+            routes['later_related']=route;trace['later_related']=update_trace
+        else:
+            trace['later_related']={'enabled':False}
+        if self.due_candidates_enabled:
+            route,due_trace=due_candidates(eligible,references,messages,query,cutoff,str(self.timezone))
+            routes['date_leads']=route;trace['date_leads']=due_trace
+        else:
+            trace['date_leads']={'enabled':False}
         fused, rank_info = defaultdict(float), defaultdict(dict)
         for route, ids in routes.items():
             trace["routes"][route] = len(ids)
             for rank, key in enumerate(ids, 1):
-                fused[key] += 1. / (60 + rank)
+                # Date leads have a bounded boost so a permitted source can
+                # compete with ordinary semantic/lexical candidates.
+                fused[key] += (2.5 if route=='date_leads' else 1.) / (60 + rank)
                 rank_info[key][route] = rank
         if self.reranker is None:
             trace["reranker"] = "optional_not_configured"
@@ -282,6 +366,10 @@ class Retriever:
 
         header = "### 可追溯记忆材料\n" + READING_POLICY + "\n"
         used, selected, selected_spans = estimate_tokens(header), [], []
+        # Leave space for a grounded uncertainty cue on explicit alternatives;
+        # otherwise normal evidence packing may consume the entire budget.
+        reserve=estimate_tokens(_CONFLICT_LINE)+1 if _question_options(query) and token_budget>=used+estimate_tokens(_CONFLICT_LINE)+100 else 0
+        evidence_budget=token_budget-reserve
         remaining = dict(units)
         omitted = 0
         while remaining:
@@ -299,9 +387,12 @@ class Retriever:
                 label, citation = "用户手写笔记", "手写记录"
             else:
                 label, citation = ("用户" if ref["role"] == "user" else "助手"), "原话"
-            line = f"- [{ref['recorded_at_iso']}] {label}〔{citation}#{span[0]}:{span[1]}-{span[2]}〕：{ref['text']}\n"
+            is_date_lead=bool(set(u['supporting_document_ids']).intersection(routes.get('date_leads',[])))
+            is_later=bool(set(u['supporting_document_ids']).intersection(routes.get('later_related',[])))
+            date_label=('【日期指代今天，计划是否仍有效未知】' if is_date_lead else '')+('【可能相关的后续原话，关系及状态未核实】' if is_later else '')
+            line = f"- {date_label}[{ref['recorded_at_iso']}] {label}〔{citation}#{span[0]}:{span[1]}-{span[2]}〕：{ref['text']}\n"
             cost = estimate_tokens(line)
-            if used + cost > token_budget:
+            if used + cost > evidence_budget:
                 omitted += 1
                 continue
             used += cost
@@ -339,7 +430,7 @@ class Retriever:
                 else:text='无法唯一确定日期；不要自行补年份或锚点'
                 source_label='手写记录' if ref['source_kind']=='owner_note' else '原话'
                 line=f"\n时间说明〔{source_label}#{ref['message_id']}〕：{expression} → {text}。这只是日期指代换算，不代表事件已发生。\n"
-                if estimate_tokens(block+line)<=token_budget:
+                if estimate_tokens(block+line)<=evidence_budget:
                     block+=line;temporal_included+=1
                 else:temporal_omitted+=1
         if temporal_omitted:gaps.append({'code':'time_annotation_omitted_budget','count':temporal_omitted})
@@ -362,12 +453,25 @@ class Retriever:
                     "source_complete": all(_covered((r["message_id"], r["start"], r["end"]), selected_spans) for r in refs),
                     "claims_verified": False})
         conflicts = self._alternatives(assertions)
+        # Only add a generic caution when at least two full, already-delivered
+        # source-backed proposals disagree. Their labels/values remain
+        # unverified model proposals and must not be presented as facts.
+        complete_ids={a['document_id'] for a in assertions if a.get('source_complete')}
+        delivered_conflicts=[c for c in conflicts if len(complete_ids.intersection(c['assertion_ids']))>=2]
+        conflict_line=_CONFLICT_LINE
+        raw_option_ambiguity=_question_option_sources(query,selected)
+        conflict_notice=False
+        if (delivered_conflicts or raw_option_ambiguity) and estimate_tokens(block+conflict_line)<=token_budget:
+            block+=conflict_line;conflict_notice=True
+        elif delivered_conflicts or raw_option_ambiguity:
+            gaps.append({'code':'conflict_notice_omitted_budget'})
         trace.update(selected_evidence=len(selected), budget_omitted_evidence=omitted,
                      time_annotations_included=temporal_included,time_annotations_omitted=temporal_omitted,
                      estimated_tokens=estimate_tokens(block), ranked_documents=len(fused),
                      selected_document_ids=[r["document_id"] for r in selected],
                      selected_sources=[{"message_id": r["message_id"], "start": r["start"], "end": r["end"]}
                                        for e in selected for r in e["source_refs"]],
+                     conflict_notice_included=conflict_notice, raw_option_ambiguity=raw_option_ambiguity,
                      ranked_candidates=[{"document_id": key, "kind": eligible[key].get("kind"),
                          "rrf_score": round(fused[key], 8), "rank_routes": rank_info[key],
                          "salience_multiplier": bounded_salience(eligible[key].get("importance", .5), eligible[key].get("pinned", False))}

@@ -5,6 +5,7 @@
  * here. No prototype, host file, ASAR, durable session or LLM route is patched.
  */
 import crypto from 'node:crypto';
+import { ContextBudgetError, CONTEXT_BUDGET_ERROR_CODE } from './request-budget.mjs';
 
 export const STOCK_LOOP_SHA256='cf57e3ecd487ac5c2553455aaa5cef2c6fb41e6bd61be5aa455675d1d7193033';
 export const STOCK_METHOD_SHA256=Object.freeze({
@@ -28,6 +29,17 @@ export const VERIFIED_LOOP_BUILDS=Object.freeze({
     }),
   }),
 });
+// Known requestMessages patch from compat/dsh-request-messages.json. The LF
+// form is derived from those exact declared replacements, not another host.
+export const NATIVE_LOOP_SHA256='05da9a39de1e0109861423eb3617a9cdcfb7fb8cc822feb455337c1f333098f8';
+export const NATIVE_CANONICAL_LOOP_SHA256='5d5f9bfe53bc4551887f242d05e0dcf79fdb3d459ef6bffde347eab650974834';
+export const NATIVE_METHOD_SHA256=Object.freeze({
+  buildRequest:'7833829fbcb6fbcfef27c2d771e3adbdcdecf89a3ef7837f71185fad08128f42',
+  step:'ebfb323a213c385823bbb457ae2c186aaea65f8c4df53dd6c4311265793c42dc',
+  withRequestMessages:'958fcced2e853dc12d46c76d725e83cc695cd9087595b575da20658a16957f24',
+});
+const NATIVE_BUILD=Object.freeze({name:'verified_021_native_request_messages',methods:NATIVE_METHOD_SHA256});
+const VERIFIED_NATIVE_BUILDS=Object.freeze({[NATIVE_LOOP_SHA256]:NATIVE_BUILD,[NATIVE_CANONICAL_LOOP_SHA256]:NATIVE_BUILD});
 // Only line-ending representation is normalized. Spaces, comments and every
 // other method byte remain part of the exact verified-build fingerprint.
 const hash=fn=>crypto.createHash('sha256').update(Function.prototype.toString.call(fn).replace(/\r\n/g,'\n')).digest('hex');
@@ -46,15 +58,32 @@ function ownsDescriptor(agent,name,installed){
     current.configurable===installed.configurable&&current.enumerable===installed.enumerable&&current.writable===installed.writable;
 }
 
-export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
-  const build=Object.hasOwn(VERIFIED_LOOP_BUILDS,sourceSha256)?VERIFIED_LOOP_BUILDS[sourceSha256]:null;
+export function createRequestBridge(options={}){
+  return createBoundRequestBridge({...options,nativeBudget:false});
+}
+export function createNativeRequestBudgetBridge(options={}){
+  return createBoundRequestBridge({...options,nativeBudget:true});
+}
+function createBoundRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256,requestBudget=null,nativeBudget=false}={}){
+  if(requestBudget!==null&&typeof requestBudget?.check!=='function')throw new TypeError('request_budget_helper_invalid');
+  const builds=nativeBudget?VERIFIED_NATIVE_BUILDS:VERIFIED_LOOP_BUILDS;
+  const build=Object.hasOwn(builds,sourceSha256)?builds[sourceSha256]:null;
   const records=new WeakMap(),agents=new Set();
   const create=llm?.createUserMessage,mark=llm?.markAgentLoopRequest,isBranded=llm?.isAgentLoopRequest;
-  const helpers=Boolean(build)&&typeof create==='function'&&typeof mark==='function';
+  const hasBudget=Boolean(requestBudget)&&typeof requestBudget.check==='function';
+  const helpers=Boolean(build)&&typeof mark==='function'&&(nativeBudget?hasBudget:typeof create==='function');
+  const methodNames=nativeBudget?['step','buildRequest','withRequestMessages']:['step','buildRequest'];
   let disposed=false,lastError=!build?'host_loop_build_unverified':helpers?null:'host_llm_helpers_missing';
   const counters={stages:0,installed:0,injections:0,refused:0,cleared:0,restored:0,
-    external_wrappers_preserved:0,aborted:0,fail_open:0,original_errors:0,reentrant_calls:0};
-  const report=code=>{lastError=code;};
+    external_wrappers_preserved:0,aborted:0,fail_open:0,original_errors:0,reentrant_calls:0,
+    budget_checks:0,budget_blocked:0,native_requests:0};
+  const report=code=>{
+    lastError=code;
+    if(hasBudget&&code!=='request_budget_exceeded'){
+      try{requestBudget.unavailable?.(code);}catch{/* Diagnostic consumers never change bridge admission. */}
+    }
+  };
+  if(!helpers&&hasBudget)report(lastError);
   const release=binding=>{if(binding?.cleanup){binding.cleanup();binding.cleanup=null;}};
   const clearBindings=record=>{
     const pending=record.pending,active=record.active;
@@ -71,7 +100,7 @@ export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
   }
   function restore(agent,record){
     clearBindings(record);record.enabled=false;
-    for(const name of ['step','buildRequest']){
+    for(const name of methodNames){
       if(ownsDescriptor(agent,name,record.installed[name])){
         try{
           const old=record.originalOwn[name];
@@ -86,9 +115,10 @@ export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
     let record=records.get(agent);if(record)return record;
     if(!object(agent)){report('agent_missing');return null;}
     const native=methodDescriptor(agent,'withRequestMessages');
-    if(native&&typeof native.value==='function'){report('native_snapshot_present');return null;}
+    if(!nativeBudget&&native&&typeof native.value==='function'){report('native_snapshot_present');return null;}
+    if(nativeBudget&&(!native||typeof native.value!=='function')){report('native_snapshot_missing');return null;}
     const original={},originalOwn={},installed={};
-    for(const name of ['buildRequest','step']){
+    for(const name of methodNames){
       const descriptor=methodDescriptor(agent,name),own=Object.getOwnPropertyDescriptor(agent,name);
       if(!descriptor||!('value'in descriptor)||typeof descriptor.value!=='function'||hash(descriptor.value)!==build.methods[name]){
         report('unknown_'+name+'_method');return null;
@@ -105,7 +135,8 @@ export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
       try{request=Reflect.apply(original.buildRequest,this,args);}
       catch(error){clearBindings(record);counters.original_errors++;throw error;}
       const active=record.active;
-      if(disposed||!record.enabled||!active)return request;
+      if(disposed||!record.enabled)return request;
+      if(!active){if(hasBudget)report('request_budget_binding_unavailable');return request;}
       try{
         if(record.ref.deref()!==this||!position(args[3])||args[3].turn!==active.turn||args[3].step!==active.step||
           args[5]!==active.signal||!phaseMatches(this,active)){
@@ -115,13 +146,50 @@ export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
           request.signal!==active.signal||(typeof isBranded==='function'&&!isBranded(request))){
           clearBindings(record);report('host_request_shape_or_brand_mismatch');return request;
         }
+        if(nativeBudget){
+          active.preparedCall=args[1];active.builtRequest=request;
+          return request;
+        }
         const transient=active.blocks.map(text=>create({content:[{type:'text',text}],source:{kind:'plugin',form:'snapshot'}}));
-        const next=mark(Object.freeze({...request,messages:Object.freeze([...request.messages,...transient])}));
+        const next=transient.length?mark(Object.freeze({...request,messages:Object.freeze([...request.messages,...transient])})):request;
         if(next===null||typeof next!=='object'||!Object.isFrozen(next)||
           (typeof isBranded==='function'&&!isBranded(next)))throw new Error('invalid host brand');
-        counters.injections++;return next;
-      }catch{
+        if(hasBudget){
+          counters.budget_checks++;
+          if(requestBudget.check(next,{preparedCall:args[1],agent:this})!==next)throw new Error('invalid request-budget result');
+        }
+        if(transient.length)counters.injections++;
+        return next;
+      }catch(error){
+        if(error instanceof ContextBudgetError||error?.code===CONTEXT_BUDGET_ERROR_CODE){
+          clearBindings(record);counters.budget_blocked++;report('request_budget_exceeded');throw error;
+        }
         clearBindings(record);counters.fail_open++;report('request_snapshot_unavailable');return request;
+      }
+    };
+    const nativeMessagesWrapper=function(...args){
+      let next;
+      // Preserve the real native helper's arguments, result and exceptions.
+      // In particular, this bridge does not inject a second snapshot.
+      try{next=Reflect.apply(original.withRequestMessages,this,args);}
+      catch(error){clearBindings(record);counters.original_errors++;throw error;}
+      const active=record.active;
+      if(disposed||!record.enabled)return next;
+      if(!active){report('request_budget_binding_unavailable');return next;}
+      try{
+        if(record.ref.deref()!==this||!phaseMatches(this,active)||args[0]!==active.builtRequest||
+          !Object.isFrozen(next)||!Array.isArray(next.messages)||!Object.isFrozen(next.messages)||
+          next.signal!==active.signal||(typeof isBranded==='function'&&!isBranded(next))){
+          clearBindings(record);report('native_request_binding_mismatch');return next;
+        }
+        counters.budget_checks++;
+        if(requestBudget.check(next,{preparedCall:active.preparedCall,agent:this})!==next)throw new Error('invalid request-budget result');
+        counters.native_requests++;return next;
+      }catch(error){
+        if(error instanceof ContextBudgetError||error?.code===CONTEXT_BUDGET_ERROR_CODE){
+          clearBindings(record);counters.budget_blocked++;report('request_budget_exceeded');throw error;
+        }
+        clearBindings(record);counters.fail_open++;report('request_snapshot_unavailable');return next;
       }
     };
     const stepWrapper=async function(decision,...rest){
@@ -136,7 +204,7 @@ export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
             // Read the actual final waterfall decision here, never the earlier
             // handler's requestMessages. Outer removal/replacement is respected.
             const blocks=Array.isArray(decision.requestMessages)?decision.requestMessages.filter(value=>typeof value==='string'&&value.trim()):[];
-            if(blocks.length)active={turn:ticket.turn,step:ticket.step,signal:ticket.signal,blocks,ticket,generation};
+            if(blocks.length||hasBudget)active={turn:ticket.turn,step:ticket.step,signal:ticket.signal,blocks,ticket,generation};
           }
         }catch{counters.fail_open++;report('final_decision_unavailable');}
       }
@@ -155,12 +223,13 @@ export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
       }
     };
     try{
-      for(const [name,value] of [['buildRequest',buildWrapper],['step',stepWrapper]]){
+      const wrappers=[['buildRequest',buildWrapper],['step',stepWrapper],...(nativeBudget?[['withRequestMessages',nativeMessagesWrapper]]:[])];
+      for(const [name,value] of wrappers){
         installed[name]=originalOwn[name]?{...originalOwn[name],value}:{value,writable:true,configurable:true,enumerable:false};
         Object.defineProperty(agent,name,installed[name]);
       }
     }catch{
-      for(const name of ['step','buildRequest'])if(installed[name]&&ownsDescriptor(agent,name,installed[name])){
+      for(const name of methodNames)if(installed[name]&&ownsDescriptor(agent,name,installed[name])){
         try{if(originalOwn[name])Object.defineProperty(agent,name,originalOwn[name]);else delete agent[name];}catch{}
       }
       record.enabled=false;report('instance_method_install_failed');return null;
@@ -219,8 +288,10 @@ export function createRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256}={}){
       const record=records.get(agent);if(!record)continue;
       instances++;if(record.pending)pending++;if(record.active)activeSteps++;busyCalls+=record.busy;
     }
-    return {mode:'scoped_agent_bridge',active:!disposed&&helpers,instances,pending,active_steps:activeSteps,busy_calls:busyCalls,
-      ...counters,last_error:lastError};
+    return {mode:nativeBudget?(helpers?'verified_native_budget':'native_budget_unavailable'):'scoped_agent_bridge',
+      active:!disposed&&helpers,instances,pending,active_steps:activeSteps,busy_calls:busyCalls,
+      ...counters,last_error:lastError,
+      ...(hasBudget&&typeof requestBudget.status==='function'?{request_budget:requestBudget.status()}:{} )};
   }
   return Object.freeze({stage,clear,dispose,status});
 }

@@ -52,3 +52,41 @@ def relation_candidates(documents,claims,query,owner,conversation_id,limit=40):
     return chosen,{'kind':'source_backed_candidate_navigation','truth_certified':False,
         'seed_count':len(seeds),'neighbor_count':len(neighbors),'hop_limit':1,
         'candidate_count':len(chosen),'alias_resolution':'exact_normalized_names_only'}
+
+def contextual_candidates(documents,claims,references,routes,similarities,limit=8):
+    """Follow literal names shared by already relevant user-original evidence.
+
+    No alias/identity inference: shared spelling is only a bounded search hint.
+    The caller has already enforced scope, privacy, temporal and source checks.
+    """
+    limit=min(8,max(0,int(limit)))
+    if not limit:return [],{'anchor_count':0,'seed_count':0,'candidate_count':0,'truth_certified':False}
+    anchors=[]
+    for key in routes.get('raw_lexical',[])[:3]:
+        if key not in anchors:anchors.append(key)
+    for key in routes.get('raw_semantic',[])[:3]:
+        if similarities.get(key,0)>=.78 and key not in anchors:anchors.append(key)
+    texts=[]
+    for key in anchors[:4]:
+        doc=documents.get(key,{})
+        if doc.get('disclosure','normal')!='normal':continue
+        texts.extend(_name(r.get('text')) for r in references.get(key,[]) if r.get('role')=='user' and r.get('is_original_utterance'))
+    if not texts:return [],{'anchor_count':0,'seed_count':0,'candidate_count':0,'truth_certified':False}
+    groups={}
+    for key,claim in claims.items():
+        doc=documents.get(key,{})
+        if doc.get('disclosure','normal')!='normal' or not isinstance(claim,dict):continue
+        name=_name(claim.get('subject'))
+        if not 2<=len(name)<=32 or name in {'user','assistant','用户','助手','unknown','unspecified'}:continue
+        # A name supplied by a model alone is not enough: it must also appear
+        # literally in a permitted user source behind that proposed claim.
+        if not any(r.get('role')=='user' and r.get('is_original_utterance') and _mentioned(name,_name(r.get('text'))) for r in references.get(key,[])):continue
+        groups.setdefault(name,[]).append(key)
+    seeds=[name for name in sorted(groups,key=lambda x:(-len(x),x)) if any(_mentioned(name,text) for text in texts)][:2]
+    chosen=[]
+    for name in seeds:
+        for key in sorted(groups[name]):
+            if key not in chosen:chosen.append(key)
+            if len(chosen)>=limit:break
+        if len(chosen)>=limit:break
+    return chosen,{'anchor_count':len(texts),'seed_count':len(seeds),'candidate_count':len(chosen),'truth_certified':False,'alias_resolution':'literal_only'}

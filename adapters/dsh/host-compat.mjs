@@ -12,7 +12,7 @@ import {VERIFIED_LOOP_BUILDS} from './request-bridge.mjs';
 const packageRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const sha256=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const safeVersion=value=>typeof value==='string'&&/^[0-9A-Za-z.+_-]{1,80}$/.test(value)?value:null;
-const modules=Object.freeze({loop:'dsh-agent-loop',session:'dsh-session',llm:'dsh-llm',tools:'dsh-tools',connection:'dsh-client-connection'});
+const modules=Object.freeze({loop:'dsh-agent-loop',session:'dsh-session',llm:'dsh-llm',tools:'dsh-tools',connection:'dsh-client-connection',compaction:'dsh-compaction',basicCompaction:'dsh-compaction-basic',toolResultPruner:'dsh-compaction-tool-result-pruner',tokenMeter:'dsh-token-meter',cordis:'cordis'});
 const required=Object.freeze(['loop','session','llm','tools']);
 function version(filename){
   try{return safeVersion(JSON.parse(fs.readFileSync(filename,'utf8').replace(/^\uFEFF/,'')).version);}catch{return null;}
@@ -26,7 +26,7 @@ export function probeRuntime(runtimePath){
     platform:process.platform,arch:process.arch,supported:false,mode:'diagnostic_only',reason:'runtime_unavailable',
     modules:Object.fromEntries(Object.keys(modules).map(key=>[key,{version:null,sha256:null,...(key==='loop'?{canonical_sha256:null}:{})}])),
     loop_sha256:null,loop_canonical_sha256:null};
-  const result={runtime:null,sessionModule:null,toolsModule:null,llmModule:null,injectionMode:'diagnostic_only',supported:false,compatibility};
+  const result={runtime:null,sessionModule:null,toolsModule:null,llmModule:null,compactionModule:null,basicCompactionModule:null,toolResultPrunerModule:null,tokenMeterModule:null,cordisModule:null,injectionMode:'diagnostic_only',supported:false,compatibility};
   let runtime;
   try{runtime=fs.realpathSync(runtimePath);if(!fs.statSync(runtime).isDirectory())return result;}catch{return result;}
   result.runtime=runtime;
@@ -49,6 +49,8 @@ export function probeRuntime(runtimePath){
   if(required.some(key=>compatibility.modules[key].sha256===null)){compatibility.reason='required_modules_missing';return result;}
   // Internal-only module references are never included in compatibility JSON.
   result.sessionModule=pathToFileURL(files.session).href;result.toolsModule=pathToFileURL(files.tools).href;result.llmModule=pathToFileURL(files.llm).href;
+  if(compatibility.modules.compaction.sha256!==null)result.compactionModule=pathToFileURL(files.compaction).href;
+  for(const key of ['basicCompaction','toolResultPruner','tokenMeter','cordis'])if(compatibility.modules[key].sha256!==null)result[key+'Module']=pathToFileURL(files[key]).href;
   const native=/\bwithRequestMessages\s*\(/.test(code)&&/this\.withRequestMessages\s*\(/.test(code)&&/decision\.requestMessages\b/.test(code);
   const exact=Object.hasOwn(VERIFIED_LOOP_BUILDS,compatibility.loop_sha256),formatOnly=Object.hasOwn(VERIFIED_LOOP_BUILDS,compatibility.loop_canonical_sha256);
   if(Number(process.versions.node.split('.')[0])<22){compatibility.reason='node_22_or_later_required';return result;}

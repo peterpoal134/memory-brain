@@ -3,7 +3,7 @@ import copy, datetime as dt, json, math, os, threading, time, uuid
 from pathlib import Path
 
 DEFAULT_SETTINGS={'capture_enabled':True,'recall_enabled':True,'semantic_enabled':True,'derive_enabled':True,
- 'cross_conversation':False,'token_budget':1200,'emotion_enabled':False,
+ 'cross_conversation':False,'update_candidates_enabled':False,'contextual_relations_enabled':False,'due_candidates_enabled':False,'token_budget':1200,'emotion_enabled':False,
  'self_notes_enabled':False,'emotion_half_life_hours':12,'derive_interval':5,
  'emotion_pleasure_half_life_hours':12,'emotion_arousal_half_life_hours':2,
  'emotion_dominance_half_life_hours':6,

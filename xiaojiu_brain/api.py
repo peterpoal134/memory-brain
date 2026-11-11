@@ -140,6 +140,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.browser_sessions.revoke(self._browser_token())
                 return self._json(200,{'logged_out':True},cookie=browser_cookie(self.server.browser_cookie_name))
             if method=='GET' and path=='/v1/status':return self._json(200,app.status())
+            if method=='POST' and path=='/v1/chat/usage':
+                from .chat_usage import UsageConflict
+                try:return self._json(200,app.chat_usage.ingest(owner,body))
+                except UsageConflict:return self._json(409,error='请求标识已有不同用量记录，未覆盖原记录')
+            if method=='GET' and path=='/v1/chat/usage':
+                return self._json(200,app.chat_usage.report(owner,period=q.get('period',['today'])[0],
+                    conversation_id=conversation,offset=int(q.get('offset',['0'])[0]),
+                    limit=min(100,max(1,int(q.get('limit',['30'])[0])))))
             if method=='GET' and path=='/v1/observatory':
                 from .observatory import snapshot
                 return self._json(200,snapshot(app))
@@ -156,6 +164,8 @@ class Handler(BaseHTTPRequestHandler):
             if method=='POST' and path=='/v1/admin/shutdown':
                 self._json(200,{'stopping':True});threading.Thread(target=self.server.shutdown,daemon=True).start();return
             if method=='POST' and path=='/v1/session/ticket':return self._json(200,{'ticket':app.issue_ticket()})
+            if method=='POST' and path=='/v1/archive/confirm':return self._json(200,app.confirm_archive(body))
+            if method=='POST' and path=='/v1/history/search':return self._json(200,app.search_history(body))
             if method=='POST' and path=='/v1/ingest':return self._json(200,app.ingest(body))
             if method=='POST' and path=='/v1/remember':return self._json(200,app.remember(body))
             if method=='POST' and path=='/v1/remember-important':return self._json(200,app.remember_important(body))

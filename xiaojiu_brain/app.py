@@ -12,12 +12,18 @@ from .extensions import Extensions
 from .life import LifeLayer
 from .policy import estimate_tokens
 from .profile_context import build_context as build_profile_context
+from .chat_usage import ChatUsageLedger
+from .history import search as search_history
 
 class BrainApp:
+    def search_history(self,data):
+        return search_history(self,data)
+
     def __init__(self,config:Config,start_worker=True):
         config.validate();self.config=config;self.owner=config.owner;self.build_id=build_id()
         self.data_dir=Path(config.data_dir).resolve();self.data_dir.mkdir(parents=True,exist_ok=True)
         self.store=Store(self.data_dir/'brain.db')
+        self.chat_usage=ChatUsageLedger(self.store)
         self.extensions=Extensions(self.data_dir/'preferences.json',{'derive_enabled':config.derive_enabled,
             'token_budget':config.token_budget,'derive_interval':config.derive_interval,
             'derive_batch_messages':config.derive_batch_messages,'derive_max_wait_seconds':config.derive_max_wait_seconds})
@@ -65,6 +71,9 @@ class BrainApp:
         s=self.extensions.settings()
         self.retriever.embedder=self.embedder if s['semantic_enabled'] else None
         self.retriever.allow_cross_conversation=s['cross_conversation']
+        self.retriever.due_candidates_enabled=s['due_candidates_enabled']
+        self.retriever.update_candidates_enabled=s['update_candidates_enabled']
+        self.retriever.contextual_relations_enabled=s['contextual_relations_enabled']
         self.worker.embedder=self.embedder if s['semantic_enabled'] else None
         self.worker.llm=self.llm if s['derive_enabled'] else None
         self.worker.interval=s['derive_interval']
@@ -79,6 +88,11 @@ class BrainApp:
            'embedding':{'configured':self.embedder is not None,'model':self.config.embed_model,'last_error':getattr(self.embedder,'last_error',None)},
            'derivation':{'configured':self.llm is not None,'model':self.config.llm_model,'last_error':getattr(self.llm,'last_error',None),'calls':getattr(self.llm,'calls',0)}},
           'extensions':self.extensions.catalog()['items'],'life':self.life.snapshot(),'config':self.config.public()}
+
+    def confirm_archive(self,data):
+        if not isinstance(data,dict) or set(data)!={'conversation_id','messages'}:
+            raise ValueError('archive_confirmation_fields_invalid')
+        return self.store.confirm_archive(self.owner,data['conversation_id'],data['messages'])
 
     def ingest(self,data):
         if not self.extensions.settings()['capture_enabled']:return {'accepted':False,'duplicate':False,'reason':'capture_paused'}

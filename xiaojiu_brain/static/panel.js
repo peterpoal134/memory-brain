@@ -1,8 +1,10 @@
+import { renderUsageSummary, renderUsageTurns, renderPriceInfo, renderCaptureInfo, renderUsageFailure } from './chat-usage-view.js';
 const $ = selector => document.querySelector(selector);
 const TOKEN_KEY = 'xiaojiu.management.token';
 let token = sessionStorage.getItem(TOKEN_KEY) || '', currentPage = 'overview', messageOffset = 0, latestStatus = null;
 let authenticated = false, authEpoch = 0, authTask = null, refreshTask = null;
-const titles = { overview: '记忆总览', messages: '原话与笔记', memories: '记忆管理', recall: '检索与出处', maintenance: '维护与备份', extensions: '自我与情绪', life: '生活', profile: '角色与约定' };
+let usageOffset = 0, usageRequestSerial = 0;
+const titles = { overview: '记忆总览', messages: '原话与笔记', memories: '记忆管理', recall: '检索与出处', usage: '对话用量', maintenance: '维护与备份', extensions: '自我与情绪', life: '生活', profile: '角色与约定' };
 function panelDestination(search = location.search) {
   const params = new URLSearchParams(search), requested = params.get('page');
   const page = Object.hasOwn(titles, requested) ? requested : 'overview';
@@ -20,7 +22,7 @@ async function enterPanel() {
   $('#connecting').hidden = true; $('#login').hidden = true; $('#app').hidden = false;
   await navigate(destination.page);
 }
-const settingLabels = { capture_enabled: '允许原话接收', recall_enabled: '允许记忆检索', semantic_enabled: '启用语义检索', derive_enabled: '后台整理与抽取', decay_enabled: '派生记忆保留策略', cross_conversation: '同一所有者的跨会话检索', emotion_enabled: '情绪信号扩展', self_notes_enabled: '自我笔记扩展', life_enabled: '启用本地生活层', life_context_enabled: '生活状态带入当次聊天' };
+const settingLabels = { capture_enabled: '允许原话接收', recall_enabled: '允许记忆检索', semantic_enabled: '启用语义检索', derive_enabled: '后台整理与抽取', decay_enabled: '派生记忆保留策略', cross_conversation: '同一所有者的跨会话检索', update_candidates_enabled: '尝试寻找相关后续原话', contextual_relations_enabled: '尝试关联同名人物的记忆', due_candidates_enabled: '尝试想起今天的计划', emotion_enabled: '情绪信号扩展', self_notes_enabled: '自我笔记扩展', life_enabled: '启用本地生活层', life_context_enabled: '生活状态带入当次聊天' };
 function el(tag, text = '', cls = '') { const n = document.createElement(tag); n.textContent = text; if (cls) n.className = cls; return n; }
 function empty(container, title = '这里还没有记录', hint = '正常聊天或添加一条笔记后，数据会出现在这里。') { const n = el('div', '', 'empty'); n.append(el('span', '◇'), el('h3', title), el('p', hint)); container.replaceChildren(n); }
 function badge(text, cls = 'muted') { return el('span', text, 'badge ' + cls); }
@@ -46,7 +48,8 @@ async function api(path, { method = 'GET', body } = {}) {
     if (requestEpoch !== authEpoch) throw new Error('登录状态已变化，请重新检查');
     if (!r.ok || payload?.ok !== true) {
       if (r.status === 401 && authenticated) showLogin(false);
-      throw new Error(typeof payload?.error === 'string' ? payload.error : (payload?.error?.message || `请求未完成（${r.status}）`));
+      const error = new Error(typeof payload?.error === 'string' ? payload.error : (payload?.error?.message || `请求未完成（${r.status}）`));
+      error.httpStatus = r.status; throw error;
     }
     return payload.data;
   } catch (e) { if (e.name === 'AbortError') throw new Error('服务响应超时，请检查本机服务状态后重试。'); throw e; }
@@ -58,10 +61,13 @@ async function busy(target, fn) {
   finally { if (target) target.disabled = false; }
 }
 function scrubPrivateView() {
-  latestStatus = null; messageOffset = 0;
+  latestStatus = null; messageOffset = 0; usageOffset = 0; usageRequestSerial++;
   for (const id of ['stats', 'provider-state', 'overview-jobs', 'maintenance-jobs', 'model-usage', 'recent-messages', 'messages-list', 'memories-list', 'recall-result', 'evidence-content', 'backup-result', 'settings-list', 'extensions-list', 'self-notes', 'conversation-options', 'life-snapshot', 'life-events', 'life-tasks', 'life-books', 'life-journal', 'life-journal-meta', 'life-state-error', 'life-rules', 'emotion-live-summary', 'emotion-rules', 'emotion-events', 'emotion-event-result', 'profile-summary', 'profile-host', 'profile-self', 'profile-important']) $('#' + id)?.replaceChildren();
   for (const node of document.querySelectorAll('#app textarea, #app input[type=text], #app input:not([type])')) node.value = '';
   for(const id of ['standards-items','standards-history','profile-context-result'])$('#'+id)?.replaceChildren();
+  for(const id of ['chat-usage-summary','chat-usage-turns','chat-usage-price','chat-usage-capture','chat-usage-background','chat-usage-pagination','chat-usage-updated'])$('#'+id)?.replaceChildren();
+  if ($('#chat-usage-more')) $('#chat-usage-more').hidden = true;
+  if ($('#chat-usage-filter')) $('#chat-usage-filter').elements.period.value = 'today';
   $('#evidence-dialog').close(); $('#toast').hidden = true; notice('');
   $('#build-id').textContent = ''; $('#last-refresh').textContent = ''; $('#message-count').textContent = '';
   $('#connection').textContent = '尚未登录'; $('#connection').className = 'badge muted';
@@ -86,6 +92,7 @@ async function navigate(page) {
     if (page === 'extensions') await extensions();
     if (page === 'profile') await profile();
     if (page === 'life') await life();
+    if (page === 'usage') await chatUsage(false);
   });
 }
 function stateRows(container, object, labels = {}) {
@@ -129,7 +136,10 @@ function refresh() {
   refreshTask = refreshData().finally(() => { refreshTask = null; }); return refreshTask;
 }
 async function refreshData() {
-  const status = await api('/v1/status'); latestStatus = status;
+  const requestEpoch = authEpoch;
+  const status = await api('/v1/status');
+  if (!authenticated || authEpoch !== requestEpoch) return;
+  latestStatus = status;
   $('#connection').textContent = '服务已连接'; $('#connection').className = 'badge good';
   $('#build-id').textContent = status.build_id ? '构建 ' + status.build_id : '';
   const stats = status.stats || {}, jobs = status.jobs || {};
@@ -150,6 +160,7 @@ async function refreshData() {
   stateRows($('#overview-jobs'), jobValues, jobLabels);
   stateRows($('#maintenance-jobs'), jobValues, jobLabels);
   renderModelUsage($('#model-usage'), status.model_usage);
+  renderModelUsage($('#chat-usage-background'), status.model_usage);
   if (jobs.recent_errors?.length) {
     const detail = el('details'); detail.append(el('summary', '查看最近的任务异常'));
     for (const item of jobs.recent_errors) detail.append(el('p', `任务 #${item.id} · ${item.kind} · ${item.error} · ${date(item.updated_at)}`, 'mono muted'));
@@ -159,6 +170,41 @@ async function refreshData() {
   $('#last-refresh').textContent = '最近刷新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   await conversations();
   if (currentPage === 'life') await life();
+  if (currentPage === 'usage' && !$('#chat-usage-turns')?.querySelector('details[open]')) await chatUsage(false);
+}
+async function chatUsage(append = false) {
+  if (!authenticated) return;
+  const requestEpoch = authEpoch, serial = ++usageRequestSerial;
+  const form = $('#chat-usage-filter'), period = ['today','month','all'].includes(form.elements.period.value) ? form.elements.period.value : 'today';
+  const conversation = form.elements.conversation_id.value.trim();
+  const offset = append ? usageOffset : 0;
+  const params = new URLSearchParams({ period, offset: String(offset), limit: '30' });
+  if (conversation) params.set('conversation_id', conversation);
+  const stillCurrent = () => authenticated && authEpoch === requestEpoch && usageRequestSerial === serial && currentPage === 'usage'
+    && form.elements.period.value === period && form.elements.conversation_id.value.trim() === conversation;
+  try {
+    const data = await api('/v1/chat/usage?' + params);
+    if (!stillCurrent()) return;
+    const rows = Array.isArray(data?.turns) ? data.turns : [];
+    renderUsageSummary($('#chat-usage-summary'), data);
+    const shown = renderUsageTurns($('#chat-usage-turns'), rows, { append, timezone: data?.price_info?.timezone });
+    renderPriceInfo($('#chat-usage-price'), data?.price_info);
+    renderCaptureInfo($('#chat-usage-capture'), data?.capture_info, data?.price_info?.timezone);
+    renderModelUsage($('#chat-usage-background'), latestStatus?.model_usage);
+    usageOffset = offset + rows.length;
+    const total = data?.pagination?.total_turns;
+    $('#chat-usage-pagination').textContent = `已载入 ${shown} 轮` + (Number.isInteger(total) && total >= 0 ? ` · 此筛选共 ${total} 轮` : '') + '；上方汇总包含筛选范围全部请求，不受此页明细数量影响。';
+    $('#chat-usage-more').hidden = data?.pagination?.has_more !== true;
+    $('#chat-usage-updated').textContent = '最近读取 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  } catch (error) {
+    if (!stillCurrent()) return;
+    usageOffset = 0;
+    renderUsageFailure($('#chat-usage-summary'), error.httpStatus === 404);
+    for (const id of ['chat-usage-turns','chat-usage-price','chat-usage-capture','chat-usage-pagination']) $('#'+id).replaceChildren();
+    $('#chat-usage-more').hidden = true;
+    $('#chat-usage-updated').textContent = '本次读取未完成';
+    renderModelUsage($('#chat-usage-background'), latestStatus?.model_usage);
+  }
 }
 async function conversations() {
   try {
@@ -246,7 +292,7 @@ async function downloadData(url, filename) {
   if (!r.ok) { if (r.status === 401 && authenticated) showLogin(false); throw new Error('文件下载失败'); }
   const blob = await r.blob(); if (requestEpoch !== authEpoch) throw new Error('登录状态已变化'); saveBlob(blob, filename);
 }
-function publicDownloadName(value, fallback) { return String(value || fallback).replace(/xiaojiu/gi, 'memory-brain'); }
+function publicDownloadName(value, fallback) { return String(value || fallback).replaceAll('小九', '忆核大脑').replace(/xiaojiu/gi, 'memory-brain'); }
 function saveBlob(blob, filename) { const u = URL.createObjectURL(blob), a = document.createElement('a'); a.href = u; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 30000); }
 async function settings() {
   const state = await api('/v1/settings'), container = $('#settings-list'); container.replaceChildren();
@@ -255,6 +301,9 @@ async function settings() {
     const row = el('div', '', 'switch-row'), label = el('label', settingLabels[key] || key), input = el('input');
     input.type = 'checkbox'; input.checked = value; input.setAttribute('aria-label', settingLabels[key] || key);
     if (key === 'cross_conversation') label.append(el('small', '默认关闭；开启后允许检索同一所有者的其他会话。'));
+    if (key === 'update_candidates_enabled') label.append(el('small', '默认关闭；可能带入同一会话中较晚的原话，仅作关联线索，不代表同一事项或最新结论。'));
+    if (key === 'contextual_relations_enabled') label.append(el('small', '默认关闭；开启后可能带入与当前话题同名人物的其他原话，同名不代表一定是同一个人。'));
+    if (key === 'due_candidates_enabled') label.append(el('small', '默认关闭；开启后，聊天时可参考少量日期对应今天的常规权限原话。计划可能已变化，不会自动提醒或发送消息。'));
     if (key === 'life_context_enabled') label.append(el('small', '只控制当次聊天状态段，不停止本地生活检查或删除记录。'));
     input.addEventListener('change', () => busy(input, async () => { await api('/v1/settings', { method: 'PATCH', body: { [key]: input.checked } }); toast('设置已保存'); })); row.append(label, input); container.append(row);
   }
@@ -530,6 +579,9 @@ for (const n of document.querySelectorAll('[data-go]')) n.addEventListener('clic
 $('#refresh').addEventListener('click', e => busy(e.currentTarget, async () => { await refresh(); await navigate(currentPage); toast('已刷新'); }));
 $('#message-filter').addEventListener('submit', e => { e.preventDefault(); busy(e.submitter, () => messages(false)); });
 $('#messages-more').addEventListener('click', e => busy(e.currentTarget, () => messages(true)));
+$('#chat-usage-filter').addEventListener('submit', e => { e.preventDefault(); busy(e.submitter, () => chatUsage(false)); });
+$('#chat-usage-filter').elements.period.addEventListener('change', () => busy(null, () => chatUsage(false)));
+$('#chat-usage-more').addEventListener('click', e => busy(e.currentTarget, () => chatUsage(true)));
 $('#memory-filter').addEventListener('submit', e => { e.preventDefault(); busy(e.submitter, memories); });
 $('#run-maintenance').addEventListener('click', e => busy(e.currentTarget, async () => { const r = await api('/v1/maintenance', { method: 'POST', body: {} }); await memories(); toast(r.enabled === false ? '保留策略当前关闭，原话未改变' : '保留策略已运行，原话保持不变'); }));
 $('#remember-form').addEventListener('submit', e => { e.preventDefault(); busy(e.submitter, async () => { const d = new FormData(e.target); await api('/v1/remember', { method: 'POST', body: { conversation_id: d.get('conversation_id'), text: d.get('text'), importance: Number(d.get('importance')), disclosure: d.get('disclosure'), metadata: { disclosure_topics: String(d.get('topics')).split(/[,，]/).map(x => x.trim()).filter(Boolean) } } }); e.target.elements.text.value = ''; await memories(); toast('笔记已保存'); }); });

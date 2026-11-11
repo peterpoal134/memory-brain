@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-brain",
-  "version": "0.2.0-alpha.18",
+  "version": "0.2.2",
   "type": "module",
   "description": "Memory Brain: standalone evidence-first memory kernel, DSH adapter and local 3D control panel",
   "license": "AGPL-3.0-only",
@@ -27,7 +27,12 @@
     "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-agent-loop": "*",
-    "@deepseek-ai/dsh-llm": "*"
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-compaction": "*",
+    "@deepseek-ai/dsh-compaction-basic": "*",
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": "*",
+    "@deepseek-ai/dsh-token-meter": "*",
+    "@deepseek-ai/cordis": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-session": {
@@ -40,6 +45,21 @@
       "optional": true
     },
     "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction-basic": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-token-meter": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
       "optional": true
     }
   },
@@ -63,7 +83,10 @@
     "docs/DSH-INSTALL.md",
     "docs/DSH-DESKTOP-COMPAT.md",
     "docs/DSH-FIRST-RUN.md",
+    "docs/RELEASE-0.2.2.md",
+    "docs/CONTEXT-MANAGEMENT.md",
     "docs/BACKGROUND-DERIVATION.md",
+    "docs/CHAT-USAGE.md",
     "docs/BRANDING.md",
     "docs/CONTRACT.md",
     "docs/DAILY-STATE-RULES.md",
@@ -76,10 +99,6 @@
     "frontend/brain/*.js",
     "frontend/*.json",
     "frontend/README.md",
-    "tests/*.py",
-    "tests/*.mjs",
-    "tests/integration/*.py",
-    "tests/integration/*.mjs",
     "scripts/install.ps1",
     "scripts/start-local.ps1",
     "scripts/open-panel.ps1",
@@ -99,15 +118,19 @@
     "README.md",
     "SHA256SUMS.json",
     "PUBLIC-RELEASE.json",
-    "*.cmd",
+    "安装.cmd",
+    "打开忆核大脑.cmd",
+    "停止忆核大脑.cmd",
+    "接入DSH.cmd",
+    "移除DSH接入.cmd",
+    "DSH兼容性检查.cmd",
     "compat/*.json",
     "compat/*.patch",
     "scripts/dsh-request-hook.mjs",
     "scripts/dsh-compat.ps1",
     "gitignore.template",
-    "scripts/__init__.py",
-    "scripts/verify_migration.py",
     "scripts/build_runtime_wheel.py",
-    "scripts/dsh-compat-report.mjs"
+    "scripts/dsh-compat-report.mjs",
+    "docs/MAINTENANCE.md"
   ]
 }

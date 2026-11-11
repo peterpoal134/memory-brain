@@ -7,6 +7,8 @@ the original message. Content equality alone never merges separate occurrences.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections import OrderedDict
+from array import array
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -143,6 +145,14 @@ class Store:
             target.parent.mkdir(parents=True, exist_ok=True)
             self.path = str(target)
         self.lock = threading.RLock()
+        # Cache pure vector decoding, never permissions or document projections.
+        # A content fingerprint also detects writes made outside this Store.
+        self._vector_cache = OrderedDict()
+        self._vector_cache_values = 0
+        # Packed doubles cap cached numeric payload at 128 MiB, not hundreds
+        # of MiB of Python float objects. Entries/hash keys add small overhead.
+        self._vector_cache_max_values = 16 * 1024 * 1024
+        self._vector_cache_max_entries = 16384
         self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
@@ -171,6 +181,10 @@ class Store:
           metadata TEXT NOT NULL, content_hash TEXT NOT NULL, source_key TEXT NOT NULL,
           UNIQUE(owner,conversation_id,kind,source_key,content_hash));
         CREATE INDEX IF NOT EXISTS ix_documents_scope ON documents(owner,conversation_id,status,recorded_at);
+        -- Keep chronological retrieval streaming even when more than one
+        -- status is admitted; avoid a large temporary sort on local systems.
+        CREATE INDEX IF NOT EXISTS ix_documents_scope_order ON documents(owner,conversation_id,recorded_at,id);
+        CREATE INDEX IF NOT EXISTS ix_documents_owner_order ON documents(owner,recorded_at,id);
         CREATE TABLE IF NOT EXISTS document_sources (
           document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
           message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -227,6 +241,8 @@ class Store:
     def close(self):
         with self.lock:
             self.conn.close()
+            self._vector_cache.clear()
+            self._vector_cache_values = 0
 
     def _enqueue(self, kind, owner, conversation_id, key, document_id=None, message_id=None):
         now = time.time()
@@ -287,6 +303,61 @@ class Store:
             if meta.get("skip_derivation") is not True:
                 self._enqueue("derive",owner,conversation_id,f"message:{mid}",message_id=mid)
         return {"accepted":True,"duplicate":False,"id":mid,"document_ids":docs}
+
+    def confirm_archive(self, owner, conversation_id, messages):
+        """Read-only confirmation that exact original bodies remain stored."""
+        owner = _identifier(owner, "owner", 256)
+        conversation_id = _identifier(conversation_id, "conversation_id")
+        if "\x00" in conversation_id:
+            raise ValueError("invalid conversation_id")
+        if not isinstance(messages, list) or not 1 <= len(messages) <= 256:
+            raise ValueError("archive_messages_must_contain_1_to_256_items")
+        requested = []
+        for item in messages:
+            if not isinstance(item, dict) or set(item) != {"message_id", "role", "body_sha256"}:
+                raise ValueError("archive_message_fields_invalid")
+            message_id = _identifier(item["message_id"], "message_id")
+            if "\x00" in message_id:
+                raise ValueError("invalid message_id")
+            role, digest = item["role"], item["body_sha256"]
+            if not isinstance(role, str) or role not in ("user", "assistant"):
+                raise ValueError("archive_message_role_invalid")
+            if (not isinstance(digest, str) or len(digest) != 64 or
+                    any(c not in "0123456789abcdefABCDEF" for c in digest)):
+                raise ValueError("archive_message_sha256_invalid")
+            requested.append((message_id, role, digest.lower()))
+        # At most 514 SQL parameters, including the fixed owner/conversation.
+        selectors = " OR ".join("(k.external_id=? AND k.role=?)" for _ in requested)
+        parameters = [owner, conversation_id]
+        for message_id, role, _ in requested:
+            parameters.extend((message_id, role))
+        with self.lock:
+            rows = self.conn.execute("""SELECT k.external_id,k.role,k.body_hash,k.deleted,m.text
+                FROM ingest_keys k LEFT JOIN messages m ON m.id=k.message_db_id
+                  AND m.owner=k.owner AND m.conversation_id=k.conversation_id
+                  AND m.message_id=k.external_id AND m.role=k.role
+                WHERE k.owner=? AND k.conversation_id=? AND (""" + selectors + ")",
+                parameters).fetchall()
+            found = {}
+            for row in rows:
+                actual = (hashlib.sha256(row["text"].encode("utf8")).hexdigest()
+                          if isinstance(row["text"], str) else None)
+                found[(row["external_id"], row["role"])] = (row["body_hash"], bool(row["deleted"]), actual)
+        items = []
+        for message_id, role, digest in requested:
+            row = found.get((message_id, role))
+            if row is None:
+                state = "missing"
+            elif row[1]:
+                state = "deleted"
+            elif row[2] is None:
+                state = "missing"
+            elif row[0] != digest or row[2] != digest:
+                state = "mismatch"
+            else:
+                state = "stored"
+            items.append({"message_id": message_id, "role": role, "state": state})
+        return {"confirmed": all(item["state"] == "stored" for item in items), "items": items}
 
     def _link_import_message(self, owner, conversation_id, dependent_id, source_ids):
         note=self.conn.execute("SELECT metadata FROM messages WHERE id=? AND owner=? AND conversation_id=?",
@@ -524,6 +595,75 @@ class Store:
                 'request_message_id':request['id'],
                 'source_message_ids':sorted({mid for mid,_,_ in selected})}
 
+    def _discard_cached_vector(self, key):
+        previous = self._vector_cache.pop(key, None)
+        if previous is not None:
+            self._vector_cache_values -= len(previous[1])
+
+    def _decode_vector(self, owner, document_id, model, dimensions, encoded):
+        key = (owner, document_id)
+        fingerprint = (model, dimensions, hashlib.sha256(encoded.encode('utf8')).digest())
+        cached = self._vector_cache.get(key)
+        if cached is not None and cached[0] == fingerprint:
+            self._vector_cache.move_to_end(key)
+            return list(cached[1])
+        values = json.loads(encoded)
+        self._discard_cached_vector(key)
+        # set_vector writes floats. Do not coerce old/malformed JSON integer
+        # arrays into floats: the public projection retains its original types.
+        # The compact mutable array stays private; callers always get a list.
+        if (isinstance(values, list) and len(values) <= self._vector_cache_max_values
+                and all(type(v) is float for v in values)):
+            self._vector_cache[key] = (fingerprint, array('d', values))
+            self._vector_cache_values += len(values)
+            while (self._vector_cache_values > self._vector_cache_max_values
+                   or len(self._vector_cache) > self._vector_cache_max_entries):
+                self._discard_cached_vector(next(iter(self._vector_cache)))
+        return values
+
+    @contextmanager
+    def _read_snapshot(self):
+        # Nested use inside an existing write transaction must not settle it.
+        with self.lock:
+            owns_snapshot = not self.conn.in_transaction
+            if owns_snapshot:
+                self.conn.execute('BEGIN')
+            try:
+                yield
+            finally:
+                if owns_snapshot:
+                    self.conn.rollback()
+
+    def _documents(self, rows):
+        """Project one scoped, ordered result with bounded batch SQL reads."""
+        results = [dict(row) for row in rows]
+        by_id = {r['id']: r for r in results}
+        for result in results:
+            result['metadata'] = json.loads(result['metadata'])
+            result['pinned'] = bool(result['pinned'])
+            result.update(source_refs=[], vector=None, vector_model=None)
+        ids = list(by_id)
+        # Stay below older SQLite parameter limits as well as modern builds.
+        for offset in range(0, len(ids), 400):
+            batch = ids[offset:offset + 400]
+            placeholders = ','.join('?' for _ in batch)
+            for source in self.conn.execute('''SELECT s.document_id,s.message_id,s.start,s.end,m.text
+                  FROM document_sources s JOIN messages m ON m.id=s.message_id
+                  WHERE s.document_id IN (''' + placeholders + ''')
+                  ORDER BY s.document_id,s.message_id,s.start,s.end''', batch):
+                by_id[source['document_id']]['source_refs'].append({
+                    'message_id':source['message_id'], 'start':source['start'], 'end':source['end'],
+                    'quote':source['text'][source['start']:source['end']]})
+            for vector in self.conn.execute('''SELECT document_id,owner,model,dimensions,vector
+                  FROM vectors WHERE document_id IN (''' + placeholders + ')', batch):
+                result = by_id[vector['document_id']]
+                if result['owner'] != vector['owner']:
+                    continue
+                result['vector'] = self._decode_vector(result['owner'], result['id'],
+                    vector['model'], vector['dimensions'], vector['vector'])
+                result['vector_model'] = vector['model']
+        return results
+
     def _document(self, row):
         result = dict(row)
         result["metadata"] = json.loads(result["metadata"])
@@ -534,9 +674,10 @@ class Store:
               WHERE s.document_id=? ORDER BY s.message_id,s.start,s.end""",(result["id"],)):
             result["source_refs"].append({"message_id":r["message_id"],"start":r["start"],
                  "end":r["end"],"quote":r["text"][r["start"]:r["end"]]})
-        vector = self.conn.execute("SELECT vector,model FROM vectors WHERE document_id=? AND owner=?",
+        vector = self.conn.execute("SELECT vector,model,dimensions FROM vectors WHERE document_id=? AND owner=?",
              (result["id"],result["owner"])).fetchone()
-        result["vector"] = json.loads(vector["vector"]) if vector else None
+        result["vector"] = self._decode_vector(result['owner'], result['id'], vector['model'],
+                                              vector['dimensions'], vector['vector']) if vector else None
         result["vector_model"] = vector["model"] if vector else None
         return result
 
@@ -567,8 +708,9 @@ class Store:
         if as_of is not None:
             where.append("recorded_at<=?");args.append(_timestamp(as_of))
         self._kind_filter(where,args,kind,kinds)
-        with self.lock:
-            return [self._document(r) for r in self.conn.execute("SELECT documents.*, (SELECT max(dep.message_id) FROM document_dependencies dep WHERE dep.document_id=documents.id) AS max_dependency_id FROM documents WHERE "+" AND ".join(where)+" ORDER BY recorded_at,id",args)]
+        with self._read_snapshot():
+            rows = self.conn.execute("SELECT documents.*, (SELECT max(dep.message_id) FROM document_dependencies dep WHERE dep.document_id=documents.id) AS max_dependency_id FROM documents WHERE "+" AND ".join(where)+" ORDER BY recorded_at,id",args).fetchall()
+            return self._documents(rows)
 
     def lexical_search(self, owner, query, conversation_id=None, limit=40, as_of=None, kind=None, include_archived=False, kinds=None, cutoff_message_id=None):
         tokens = list(dict.fromkeys(_lexical_tokens(str(query or ""))))[:256]
@@ -656,6 +798,7 @@ class Store:
         self.conn.execute("""INSERT INTO vectors(document_id,owner,model,vector,dimensions) VALUES(?,?,?,?,?)
               ON CONFLICT(document_id) DO UPDATE SET owner=excluded.owner,model=excluded.model,
               vector=excluded.vector,dimensions=excluded.dimensions""",(document_id,owner,model,_json(values),len(values)))
+        self._discard_cached_vector((owner, document_id))
 
     def set_vector(self, owner, document_id, vector, model):
         with self._transaction():
@@ -706,6 +849,10 @@ class Store:
             return self._document(self.conn.execute("SELECT * FROM documents WHERE id=?",(document_id,)).fetchone())
 
     def _remove_documents(self, ids):
+        ids = set(ids)
+        for key in list(self._vector_cache):
+            if key[1] in ids:
+                self._discard_cached_vector(key)
         for docid in ids:
             self.conn.execute("DELETE FROM document_fts WHERE document_id=?",(docid,))
             self.conn.execute("DELETE FROM documents WHERE id=?",(docid,))

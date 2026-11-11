@@ -4,8 +4,12 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { DurableQueue } from './durable-queue.mjs';
 import { createImportantTool } from './important-tool.mjs';
+import { ChatUsageCollector } from './chat-usage.mjs';
+import { createContextManager } from './context-manager.mjs';
+import { createSessionHistory } from './session-history.mjs';
 export const name = 'xiaojiu-brain';
 export const inject = [];
 const PREPARE = Symbol.for('xiaojiu-brain.prepare.v1');
@@ -104,7 +108,11 @@ export async function createAdapter(ctx, config = {}) {
   const warn = code => { warnings.push({ code, at: new Date().toISOString() }); if (warnings.length > 50) warnings.shift(); ctx.logger?.warn?.(`xiaojiu-brain: ${code}`); };
   const importantTool = { available: false, state: 'not_started' };
   const profileContext = { supported: null, state: 'not_requested', included: false, omitted_count: 0 };
-  const controller = { enabled: false, warnings, queue: null, stop: async () => { config.requestBridge?.dispose(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, important_tool: { ...importantTool }, profile_context: { ...profileContext },
+  let contextManagement=null, sessionHistory=null;
+  const stopSupport = async () => { try { await config.compactionSupport?.stop(); } catch { warn('context_support_stop_failed'); } };
+  const controller = { enabled: false, warnings, queue: null, chatUsage: null, stop: async () => { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose();await stopSupport(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, chat_usage: controller.chatUsage?.status() || { enabled:false }, important_tool: { ...importantTool }, profile_context: { ...profileContext },
+    session_history:sessionHistory?.status()||{enabled:false,available:false,tool_available:false,state:'not_started'},
+    context_management:{compression:contextManagement?.status()||{state:'not_started'},budget:config.requestBudget?.status()||{state:'unavailable',active:false},support:config.compactionSupport?.status()||{state:'unavailable'}},
     request_injection: config.requestBridge?.status() || { mode: config.injectionMode || 'unverified_direct', active: controller.enabled } }) };
   adapters.set(ctx, controller);
   if (config.enabled !== true) return controller;
@@ -117,7 +125,7 @@ export async function createAdapter(ctx, config = {}) {
   const lifeTimeoutMs = Number.isFinite(configuredLifeTimeout) ? Math.max(1, Math.min(800, configuredLifeTimeout)) : 800;
   const configuredProfileTimeout = Number(config.profileTimeoutMs ?? 800);
   const profileTimeoutMs = Number.isFinite(configuredProfileTimeout) ? Math.max(1, Math.min(800, configuredProfileTimeout)) : 800;
-  let registry, member, timer, queue, toolDependency, toolUnregister;
+  let registry, member, timer, queue, toolDependency, toolUnregister, chatUsage;
   const importantShutdown = new AbortController();
   const publishCapabilities = () => {
     if (!queue?.dir) return;
@@ -148,12 +156,69 @@ export async function createAdapter(ctx, config = {}) {
       baseUrl, token, fetchImpl, maxPending: config.maxPending || 20000, timeoutMs, onAlert: warn });
     queue.init();
     controller.queue = queue;
+    if (config.chatUsageEnabled !== false) {
+      chatUsage = new ChatUsageCollector({ dir:path.join(queue.dir,'chat-usage'),baseUrl,token,fetchImpl,
+        timeoutMs:config.chatUsageTimeoutMs || 3000,intervalMs:config.chatUsageIntervalMs || 1000,onWarning:warn });
+      try { chatUsage.init(); controller.chatUsage = chatUsage; }
+      catch { chatUsage.close(); chatUsage = null; warn('chat_usage_unavailable'); }
+      if (chatUsage) {
+        ctx.on?.('session/event', session => { if (controller.enabled) chatUsage.attach(session); });
+        ctx.on?.('agent/assistant-stream', ({agent,frame}) => { if (controller.enabled) chatUsage.observeFrame(agent,frame); });
+      }
+    }
     const scan = session => {
       if (config.captureEnabled === false) return;
       try { for (let n = 0; n < 5; n++) if (catchUp(queue, session, { limit: config.catchupLimit || 200, captureAfter }) < (config.catchupLimit || 200)) break; }
       catch { warn('session_capture_failed_pending_will_retry'); }
     };
+    const ensureArchived = async (session, selectedSeqs, signal) => {
+      if(!controller.enabled||config.captureEnabled===false||signal?.aborted||!Array.isArray(session?.log))return false;
+      const deadline=Date.now()+Number(config.contextArchiveTimeoutMs??5000);
+      try{
+        const events=[...session.log],selected=new Set(selectedSeqs),conversation=String(session.id||'');
+        if(!conversation)return false;
+        const projection=archivalProjection(events,events.length),originals=new Map();
+        for(let index=0;index<events.length;index++){
+          const event=events[index];if(!selected.has(event.seq))continue;
+          const messages=projection.get(index)||[];
+          if(messages.length&&captureAfter!==null&&Number(event.time)<=captureAfter){warn('context_archive_policy_boundary');return false;}
+          for(const message of messages){
+            const payload={conversation_id:conversation,...message};
+            const key=JSON.stringify([payload.message_id,payload.role]);
+            const previous=originals.get(key);
+            if(previous&&previous.text!==payload.text){warn('context_archive_identity_mismatch');return false;}
+            originals.set(key,payload);
+          }
+        }
+        for(const payload of originals.values()){
+          if(signal?.aborted||Date.now()>=deadline)return false;
+          if(!queue.enqueue(payload)||!await queue.drainUntil(payload,Math.max(0,deadline-Date.now())))return false;
+        }
+        const messages=[...originals.values()].map(payload=>({message_id:payload.message_id,role:payload.role,
+          body_sha256:createHash('sha256').update(payload.text,'utf8').digest('hex')}));
+        for(let index=0;index<messages.length;index+=256){
+          if(signal?.aborted||Date.now()>=deadline)return false;
+          const chunk=messages.slice(index,index+256),timeout=AbortSignal.timeout(Math.max(1,deadline-Date.now()));
+          const combined=signal?AbortSignal.any([signal,timeout]):timeout;
+          const response=await fetchImpl(baseUrl+'/v1/archive/confirm',{method:'POST',redirect:'error',signal:combined,
+            headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
+            body:JSON.stringify({conversation_id:conversation,messages:chunk})});
+          const reply=await response.json();
+          if(!response.ok||reply?.ok!==true||reply.data?.confirmed!==true||!Array.isArray(reply.data.items)||reply.data.items.length!==chunk.length){
+            warn(response.status===404?'context_archive_backend_upgrade_required':'context_archive_not_confirmed');return false;
+          }
+          if(reply.data.items.some((item,i)=>item.message_id!==chunk[i].message_id||item.role!==chunk[i].role||item.state!=='stored'))return false;
+        }
+        return !signal?.aborted;
+      }catch{warn('context_archive_confirmation_failed');return false;}
+    };
+    contextManagement=createContextManager({enabled:config.contextEnabled===true,
+      triggerTurns:config.contextTriggerTurns??12,keepTurns:config.contextKeepTurns??4,
+      timeoutMs:config.contextCompactionTimeoutMs??30000,compactionModule:config.compactionModule,
+      prepareAgent:(agent,signal)=>config.compactionSupport?.prepareAgent(agent,signal),
+      onWarning:warn,ensureArchived,shutdownSignal:importantShutdown.signal});
     member = session => {
+      chatUsage?.attach(session);
       if (!session || session[INSTALL] || typeof session.append !== 'function') return;
       if (session.__fishRawQueueInstalled) { warn('legacy_rawqueue_detected_disable_old_plugin'); return; }
       sessions.set(String(session.id), session); originals.set(session, session.append);
@@ -168,6 +233,16 @@ export async function createAdapter(ctx, config = {}) {
     }
     registry = proto[PREPARE]; registry.members.add(member);
     controller.enabled = true;
+    const bindCurrentSession = session => {
+      if (!controller.enabled || config.captureEnabled === false || !session?.id || !Array.isArray(session.log)) return false;
+      member(session); scan(session); return sessions.get(String(session.id)) === session;
+    };
+    const historyTimeout = Number(config.historyTimeoutMs ?? 2000);
+    sessionHistory = createSessionHistory({captureMessage,bindSession:bindCurrentSession,queue,fetchImpl,baseUrl,token,
+      timeoutMs:Number.isFinite(historyTimeout)?Math.max(100,Math.min(15000,Math.floor(historyTimeout))):2000,
+      enabled:()=>controller.enabled && config.captureEnabled !== false && config.recallEnabled !== false && config.historyEnabled !== false,
+      autoEnabled:config.historyAutoEnabled !== false,captureAfter,shutdownSignal:importantShutdown.signal,onWarning:warn});
+    if(config.historyEnabled === false)sessionHistory.setToolState('disabled');
     const tick = async () => { for (const session of sessions.values()) scan(session); await queue.flush(); queue.sweep(); };
     timer = setInterval(() => { tick().catch(() => warn('queue_tick_failed')); }, Math.max(50, config.intervalMs || 1000)); timer.unref?.();
     const recall = async (payload, next) => {
@@ -180,8 +255,10 @@ export async function createAdapter(ctx, config = {}) {
       const session = payload?.agent?.session, conversation = String(session?.id || payload?.agent?.id || '');
       if (!turn || !conversation) return decision;
       if (session) { member(session); scan(session); }
+      await contextManagement.beforeStep(payload,decision);
       const cacheKey = `${conversation}\0${turn.id}`;
-      let blocks = cache.get(cacheKey);
+      const cached = cache.get(cacheKey);
+      let blocks = cached?.blocks, hasEvidence = cached?.hasEvidence === true;
       if (blocks === undefined) {
         // Life state is a separate, bounded request-only channel. A slow recall
         // provider or an unconfirmed archive cannot make its local state vanish.
@@ -251,6 +328,7 @@ export async function createAdapter(ctx, config = {}) {
           finally { clearTimeout(timeout); payload?.signal?.removeEventListener('abort', abort); }
         };
         const [life, profile, evidence] = await Promise.all([fetchLife(), fetchProfile(), fetchEvidence()]);
+        hasEvidence = Boolean(evidence.block?.trim());
         // Old backends may ignore include_life_context:false. Preserve their
         // entire block; only add the new side channel when exclusion is explicit
         // or evidence is absent. Never guess by removing text from their result.
@@ -260,9 +338,13 @@ export async function createAdapter(ctx, config = {}) {
         if (life && (!evidence.block || evidence.includesLife === false)) blocks.push(life);
         blocks = [...new Set(blocks.filter(block => typeof block === 'string' && block.trim()))];
         if (!payload?.signal?.aborted) {
-          cache.set(cacheKey, blocks); if (cache.size > 100) cache.delete(cache.keys().next().value);
+          cache.set(cacheKey, {blocks,hasEvidence}); if (cache.size > 100) cache.delete(cache.keys().next().value);
         }
       }
+      // History has its own single-turn frozen transient cache. It never enters
+      // durable decision.messages, and the next user turn re-checks permission.
+      const historyBlock = await sessionHistory.automatic(payload,decision,{coreEvidence:hasEvidence,existingBlock:[...existing,...blocks].join('\n')});
+      if(historyBlock)blocks=[...blocks,historyBlock];
       if (payload?.signal?.aborted || !controller.enabled || !blocks.length) return decision;
       const requestMessages = [...existing];
       for (const block of blocks) if (!requestMessages.includes(block)) requestMessages.push(block);
@@ -288,11 +370,16 @@ export async function createAdapter(ctx, config = {}) {
     ctx.on?.('agent/pre-step', handlePreStep);
     controller.recall = handlePreStep;
     if (config.importantToolEnabled === false) setImportantStatus('disabled');
-    else {
-      setImportantStatus('waiting_tools');
+    else setImportantStatus('waiting_tools');
+    if (config.importantToolEnabled !== false || config.historyEnabled !== false) {
+      const toolsUnavailable = code => {
+        if(config.importantToolEnabled !== false)setImportantStatus('unavailable');
+        if(config.historyEnabled !== false)sessionHistory.setToolState('unavailable');
+        warn(code);
+      };
       const installTool = async scoped => {
         const runtime = scoped.get?.('tools') || scoped.tools;
-        if (!runtime || typeof runtime.register !== 'function') { setImportantStatus('unavailable'); warn('important_tool_runtime_unavailable'); return; }
+        if (!runtime || typeof runtime.register !== 'function') { toolsUnavailable('memory_tool_runtime_unavailable'); return; }
         let toolsModule = config.toolsModule;
         if (!toolsModule && config.sessionModule) {
           const sessionURL = moduleSpecifier(config.sessionModule);
@@ -303,29 +390,42 @@ export async function createAdapter(ctx, config = {}) {
         if (typeof defineTool !== 'function') throw new Error('important_tool_module_unsupported');
         const configuredTimeout = Number(config.importantTimeoutMs ?? 5000);
         const importantTimeout = Number.isFinite(configuredTimeout) ? Math.max(500, Math.min(15000, configuredTimeout)) : 5000;
-        const unregister = runtime.register(createImportantTool({ defineTool, captureMessage, queue, fetchImpl, baseUrl, token,
-          timeoutMs: importantTimeout, enabled: () => controller.enabled, shutdownSignal: importantShutdown.signal,
-          bindSession: session => {
-            if (!controller.enabled || config.captureEnabled === false || !session?.id || !Array.isArray(session.log)) return false;
-            member(session); scan(session); return sessions.get(String(session.id)) === session;
-          } }));
-        toolUnregister = unregister; setImportantStatus('ready', true);
-        return () => { unregister(); if (toolUnregister === unregister) toolUnregister = null;
-          setImportantStatus(controller.enabled ? 'waiting_tools' : 'stopped'); };
+        const removers = [];
+        try {
+          if(config.importantToolEnabled !== false){
+            removers.push(runtime.register(createImportantTool({ defineTool, captureMessage, queue, fetchImpl, baseUrl, token,
+              timeoutMs: importantTimeout, enabled: () => controller.enabled, shutdownSignal: importantShutdown.signal,
+              bindSession:bindCurrentSession })));
+            setImportantStatus('ready', true);
+          }
+          if(config.historyEnabled !== false){removers.push(runtime.register(sessionHistory.createTool(defineTool)));sessionHistory.setToolState('ready');}
+        } catch(error) { for(const remove of removers.reverse())try{remove?.();}catch{} throw error; }
+        let disposed=false;
+        const unregister=()=>{
+          if(disposed)return;disposed=true;
+          for(const remove of removers.reverse())try{remove?.();}catch{warn('memory_tool_unregistration_failed');}
+          if(toolUnregister===unregister)toolUnregister=null;
+          if(config.importantToolEnabled!==false)setImportantStatus(controller.enabled?'waiting_tools':'stopped');
+          if(config.historyEnabled!==false)sessionHistory.setToolState(controller.enabled?'not_registered':'stopped');
+        };
+        toolUnregister=unregister;
+        return unregister;
       };
       if (typeof ctx.inject === 'function') {
         // Optional service dependency: register when the real ToolRuntime arrives,
         // and unregister/rebind if that service is disposed or replaced.
         toolDependency = ctx.inject(['tools'], async scoped => {
           try { return await installTool(scoped); }
-          catch { setImportantStatus('unavailable'); warn('important_tool_registration_failed'); }
+          catch { toolsUnavailable('memory_tool_registration_failed'); }
         });
       } else if (ctx.tools) {
-        try { await installTool(ctx); } catch { setImportantStatus('unavailable'); warn('important_tool_registration_failed'); }
-      } else { setImportantStatus('unavailable'); warn('important_tool_runtime_unavailable'); }
+        try { await installTool(ctx); } catch { toolsUnavailable('memory_tool_registration_failed'); }
+      } else { toolsUnavailable('memory_tool_runtime_unavailable'); }
     }
     controller.stop = async () => {
-      controller.enabled = false; config.requestBridge?.dispose(); importantShutdown.abort(); clearInterval(timer); registry.members.delete(member);
+      controller.enabled = false;sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); importantShutdown.abort(); clearInterval(timer); registry.members.delete(member);
+      await stopSupport();
+      await chatUsage?.stop();
       if (toolDependency?.dispose) await toolDependency.dispose();
       if (toolUnregister) { toolUnregister(); toolUnregister = null; }
       setImportantStatus('stopped');
@@ -339,7 +439,7 @@ export async function createAdapter(ctx, config = {}) {
     ctx.on?.('dispose', () => controller.stop());
     ctx.effect?.(() => () => controller.stop());
     ctx.logger?.info?.('xiaojiu-brain: enabled; visible messages only; request-level recall');
-  } catch (e) { config.requestBridge?.dispose(); warn(String(e.message || 'adapter_initialization_failed').replace(/[^a-zA-Z0-9_:.-]/g, '')); queue?.close(); }
+  } catch (e) { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); await stopSupport();await chatUsage?.stop(); warn(String(e.message || 'adapter_initialization_failed').replace(/[^a-zA-Z0-9_:.-]/g, '')); queue?.close(); }
   return controller;
 }
 

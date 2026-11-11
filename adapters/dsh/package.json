@@ -1,1 +1,11 @@
-{"name":"dsh-xiaojiu-brain","version":"0.1.0","type":"module","main":"./xiaojiu-brain.mjs","exports":"./xiaojiu-brain.mjs","engines":{"node":">=22"},"description":"DSH adapter for the standalone Xiaojiu Brain service"}
+{
+  "name": "dsh-xiaojiu-brain",
+  "version": "0.2.2",
+  "type": "module",
+  "main": "./xiaojiu-brain.mjs",
+  "exports": "./xiaojiu-brain.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "DSH adapter for the standalone Memory Brain service"
+}

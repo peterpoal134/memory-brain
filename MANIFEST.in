@@ -1,16 +1,23 @@
 include LICENSE NOTICE.md README.md
-recursive-include xiaojiu_brain/static *.html *.css *.js *.png *.svg *.bin *.json *.md
+recursive-include xiaojiu_brain/static *.html *.css *.js *.svg *.bin *.json *.md
 recursive-include adapters *.mjs *.md *.json
 include package.json cordis.patch.yml
-recursive-include docs *.md
-recursive-include scripts *.py *.ps1 *.mjs
-recursive-include tests *.py *.mjs
+include docs/BACKGROUND-DERIVATION.md docs/CHAT-USAGE.md docs/BRANDING.md docs/CONTRACT.md
+include docs/DAILY-STATE-RULES.md docs/LIFE-LAYER.md docs/MEMORY-MAP.md docs/OBSERVATORY-API.md
+include docs/PROFILE-IMPORTANT.md docs/DSH-INSTALL.md docs/SEMANTIC-MEMORY.md docs/TIME-SEMANTICS.md
+include docs/DSH-DESKTOP-COMPAT.md docs/DSH-FIRST-RUN.md docs/RELEASE-0.2.2.md docs/CONTEXT-MANAGEMENT.md docs/MAINTENANCE.md
+include scripts/install.ps1 scripts/start-local.ps1 scripts/open-panel.ps1 scripts/connect-dsh.ps1
+include scripts/register-dsh.mjs scripts/verify-package.ps1 scripts/build_brain.mjs scripts/build_fallback.py
+include scripts/build_plugin_release.py scripts/build_release.py scripts/dsh_plan.py scripts/dsh-request-hook.mjs
+include scripts/dsh-compat.ps1 scripts/build_runtime_wheel.py scripts/dsh-compat-report.mjs
 recursive-include frontend *.js *.json *.md
 recursive-include client *.js
-include install.cmd open-panel.cmd stop-brain.cmd
-include connect-dsh.cmd remove-dsh.cmd
-include dsh-compat-check.cmd
+include 安装.cmd 打开忆核大脑.cmd 停止忆核大脑.cmd
+include 接入DSH.cmd 移除DSH接入.cmd
+include DSH兼容性检查.cmd
 recursive-include compat *.json *.patch
 recursive-include wheels tzdata-*.whl
 exclude xiaojiu_brain/static/brain-fallback.png
 exclude docs/LIVE-CUTOVER-20261108.md docs/ACCEPTANCE.md docs/PANEL-LAUNCHER-FIX-20261108.md docs/LEGACY-PRIVATE-MAPPING.md
+prune tests
+exclude docs/TESTING.md docs/RELEASE-RC1.md scripts/verify_migration.py scripts/__init__.py
