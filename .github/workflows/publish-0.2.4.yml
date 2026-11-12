@@ -1,4 +1,5 @@
 name: Publish verified 0.2.4 resource fix
+# Source and wheel content are identical across native-path build IDs.
 
 on:
   push:

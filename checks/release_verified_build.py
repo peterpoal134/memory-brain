@@ -21,7 +21,10 @@ with zipfile.ZipFile(archive) as z:
         assert digest(files[name])==sha, 'Source differs from reviewed input: '+name
     info=json.loads(files['PUBLIC-RELEASE.json'])
     assert info['version']==info['plugin_version']==info['kernel_version']=='0.2.4'
-    assert info['build_id']==expected['kernel_build_id']
+    # config.build_id historically hashes platform-native relative paths.
+    # Both exact reviewed IDs represent the same SHA-checked 37 source files;
+    # the full source and logical wheel checks below are still mandatory.
+    assert info['build_id'] in expected['kernel_build_ids']
     manifest=json.loads(files['SHA256SUMS.json'])
     assert set(manifest)==set(files)-{'SHA256SUMS.json'}
     assert all(digest(files[name])==sha for name,sha in manifest.items())

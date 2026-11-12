@@ -375,5 +375,9 @@
     "xiaojiu_brain/temporal.py": "90fe082d0363891dc8d8b7096ec3a1630fe26ffc754acb6a58d920e054b2dab8",
     "xiaojiu_brain/transport.py": "3f2175aac853b182db1d7aa8a75bdf04c5d3c2f21ef37ed707dbd12ebaaccda3",
     "xiaojiu_brain/update_candidates.py": "c0d5506e4ee93753a974fc533eae61adc131424f786107037882d66b6332b332"
-  }
+  },
+  "kernel_build_ids": [
+    "a835486d30831593",
+    "d5863208085a8ffe"
+  ]
 }
