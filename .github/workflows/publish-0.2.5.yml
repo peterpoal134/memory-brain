@@ -1,0 +1,55 @@
+name: Publish verified 0.2.5 resource fix
+# Source and wheel content are identical across native-path build IDs.
+
+on:
+  push:
+    branches: [release/0.2.5-stability-fix]
+    paths: [.github/workflows/publish-0.2.5.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: memory-brain-release-0.2.5
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    if: github.repository == 'peterpoal134/memory-brain' && github.ref == 'refs/heads/release/0.2.5-stability-fix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Build and verify the public archive
+        run: |
+          python -X utf8 scripts/build_plugin_release.py --out dist
+          python -X utf8 checks/release_verified_build.py
+      - name: Run self-contained stability checks
+        run: |
+          python -I -X utf8 checks/test_storage_stability.py
+          python -I -X utf8 checks/test_transport_lifecycle.py
+          python -I -X utf8 checks/test_timeout_config.py
+          python -I -X utf8 checks/test_http_stability.py --source .
+          node --unhandled-rejections=strict checks/test_onboarding_cleanup.mjs
+          node checks/test_request_budget_units.mjs
+      - name: Promote only the verified distribution
+        run: |
+          test "$(python -c 'import json; print(json.load(open("package.json"))["version"])')" = '0.2.5'
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = 'a2ff2e4e3b2b008d0df1e3517c6b0f5783d771d4'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --force -- PUBLIC-RELEASE.json SHA256SUMS.json wheels/xiaojiu_brain-0.2.5-py3-none-any.whl
+          git diff --cached --quiet || git commit -m 'build: attach verified 0.2.5 distribution'
+          git push --atomic origin HEAD:refs/heads/main HEAD:refs/heads/release/0.2.5-stability-fix
+      - name: Publish the checked downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.2.5 dist/memory-brain-dsh-0.2.5-public.zip dist/memory-brain-dsh-0.2.5-public.zip.sha256 --target "$(git rev-parse HEAD)" --title 'v0.2.5 稳定性修复' --notes-file docs/RELEASE-0.2.5.md --latest

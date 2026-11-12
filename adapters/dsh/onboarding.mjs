@@ -161,8 +161,18 @@ export function mountOnboarding(ctx,controller){
   const connection=ctx.get?.('connection')||ctx.connection;
   if(typeof connection?.fetch?.register!=='function')throw invalid('dsh_setup_connection_routes_required');
   const off=[];
+  let disposal;
+  const disposeRoutes=()=>disposal ||= (async()=>{
+    // Native Fetch registrations return asynchronous disposers. Always settle
+    // every cleanup, including rollback after a later route failed to mount.
+    // A teardown error must not escape as an unhandled rejection in the host.
+    const results=await Promise.allSettled(off.map(dispose=>Promise.resolve().then(()=>dispose())));
+    if(results.some(result=>result.status==='rejected')){
+      try{ctx.logger?.warn?.('memory-brain: setup_route_cleanup_failed');}catch{}
+    }
+  })();
   try{for(const action of ACTIONS)off.push(connection.fetch.register({
     path:SETUP_PREFIX+action,methods:[action==='status'?'GET':'POST'],requestBody:'buffered',fetch:request=>controller.handle(request)}));}
-  catch(error){for(const dispose of off)void dispose();throw error;}
-  return async()=>{await Promise.all(off.map(dispose=>dispose()));};
+  catch(error){void disposeRoutes();throw error;}
+  return disposeRoutes;
 }

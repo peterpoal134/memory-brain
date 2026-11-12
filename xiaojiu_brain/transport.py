@@ -27,6 +27,7 @@ socket 在 finally 里关掉。这样退出时间由总时限决定，与上游�
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import socket
@@ -37,7 +38,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 __all__ = [
-    "UpstreamTimeout", "UpstreamTransportError", "UpstreamHTTPError",
+    "UpstreamTimeout", "UpstreamTransportError", "UpstreamHTTPError", "UpstreamResponseTooLarge",
     "post_json", "stream_sse", "last_timing", "resolve_stats",
 ]
 
@@ -45,6 +46,9 @@ SLICE = 0.2          # 每次阻塞的最长秒数；退出时间 = 总时限 + 
 
 RESOLVE_WORKERS = 4  # DNS 工作线程数：固定，不随请求增长
 RESOLVE_QUEUE = 16   # DNS 等待队列长度：满则立即失败，不无限堆积
+MAX_JSON_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_CHUNK_LINE_BYTES = 8192
+MAX_TRAILER_BYTES = 64 * 1024
 
 
 class UpstreamTimeout(TimeoutError):
@@ -53,6 +57,10 @@ class UpstreamTimeout(TimeoutError):
 
 class UpstreamTransportError(IOError):
     """连接/协议层面的错误（对端断开、半包、TLS 失败、非 JSON 响应等）。"""
+
+
+class UpstreamResponseTooLarge(UpstreamTransportError):
+    """A non-streaming response exceeded its explicit bounded byte allowance."""
 
 
 class UpstreamHTTPError(UpstreamTransportError):
@@ -80,7 +88,7 @@ def _env_float(name: str, default: float) -> float:
         value = float(os.environ.get(name, "") or default)
     except Exception:
         return default
-    return value if value > 0 else default
+    return value if math.isfinite(value) and value > 0 else default
 
 
 def _remaining(deadline: float) -> float:
@@ -297,7 +305,9 @@ class _Reader:
         out, self.buf = self.buf[:want], self.buf[want:]
         return out
 
-    def to_eof(self, phase: str = "body") -> bytes:
+    def to_eof(self, phase: str = "body", limit: int | None = None) -> bytes:
+        if limit is not None and len(self.buf) > limit:
+            raise UpstreamResponseTooLarge("upstream_response_too_large")
         while True:
             chunk = self._fill(phase)
             if chunk is None:
@@ -305,26 +315,55 @@ class _Reader:
             if chunk == b"":
                 break                       # 对端关连接，正常收尾
             self.buf += chunk
+            if limit is not None and len(self.buf) > limit:
+                raise UpstreamResponseTooLarge("upstream_response_too_large")
         out, self.buf = self.buf, b""
         return out
 
-    def line(self, phase: str = "body") -> bytes:
+    def line(self, phase: str = "body", limit: int = MAX_CHUNK_LINE_BYTES) -> bytes:
         while b"\r\n" not in self.buf:
+            if len(self.buf) > limit:
+                raise UpstreamTransportError("upstream_chunk_line_too_large")
             self._need(phase)
         line, _, self.buf = self.buf.partition(b"\r\n")
+        if len(line) > limit:
+            raise UpstreamTransportError("upstream_chunk_line_too_large")
         return line
 
+    def iter_exact(self, want: int):
+        while want:
+            size = min(want, 65536)
+            yield self.exact(size)
+            want -= size
 
-def _read_chunked(reader: _Reader) -> bytes:
+    def iter_eof(self):
+        if self.buf:
+            buffered, self.buf = self.buf, b""
+            yield buffered
+        while True:
+            chunk = self._fill("body")
+            if chunk is None:continue
+            if not chunk:return
+            yield chunk
+
+
+def _read_chunked(reader: _Reader, max_bytes: int = MAX_JSON_RESPONSE_BYTES) -> bytes:
     out = bytearray()
     while True:
         size_line = reader.line("body")
         if not size_line:
             continue
         size = int(size_line.split(b";")[0].strip() or b"0", 16)
+        if size < 0:raise UpstreamTransportError("upstream_invalid_chunk_size")
+        if size > max_bytes - len(out):
+            raise UpstreamResponseTooLarge("upstream_response_too_large")
         if size == 0:
+            trailer_bytes = 0
             while True:                     # trailer
                 trailer = reader.line("body")
+                trailer_bytes += len(trailer) + 2
+                if trailer_bytes > MAX_TRAILER_BYTES:
+                    raise UpstreamTransportError("upstream_trailers_too_large")
                 if not trailer:
                     break
             return bytes(out)
@@ -374,15 +413,20 @@ def _tls_wrap(sock: socket.socket, host: str, deadline: float, timing: dict) -> 
 
 def post_json(url: str, payload: dict, headers: dict | None = None,
               total_timeout: float | None = None,
-              read_timeout: float | None = None) -> dict:
+              read_timeout: float | None = None,
+              max_response_bytes: int = MAX_JSON_RESPONSE_BYTES) -> dict:
     """POST 一个 JSON 拿回 JSON；到总时限抛 UpstreamTimeout。
 
     保证：本函数返回或抛出时，自己打开的 socket 已关闭；不遗留看门狗/计时线程。
     """
+    if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) or max_response_bytes < 1:
+        raise ValueError("max_response_bytes must be a positive integer")
     total = float(total_timeout if total_timeout is not None
                   else _env_float("MEMORY_LLM_TOTAL_TIMEOUT", 60.0))
     read = float(read_timeout if read_timeout is not None
                  else _env_float("MEMORY_LLM_READ_TIMEOUT", min(30.0, total)))
+    if not math.isfinite(total) or total <= 0 or not math.isfinite(read) or read <= 0:
+        raise UpstreamTransportError("upstream_invalid_timeout")
     parts = urlsplit(url)
     scheme = (parts.scheme or "http").lower()
     if scheme not in ("http", "https"):
@@ -449,15 +493,17 @@ def post_json(url: str, payload: dict, headers: dict | None = None,
         timing["status"] = status
         chunked = "chunked" in (resp_headers.get("transfer-encoding") or "").lower()
         if chunked:
-            data = _read_chunked(reader)
+            data = _read_chunked(reader, max_response_bytes)
         elif "content-length" in resp_headers:
             try:
                 want = int(resp_headers["content-length"])
             except Exception:
                 want = -1
-            data = reader.exact(want) if want >= 0 else reader.to_eof()
+            if want > max_response_bytes:
+                raise UpstreamResponseTooLarge("upstream_response_too_large")
+            data = reader.exact(want) if want >= 0 else reader.to_eof(limit=max_response_bytes)
         else:
-            data = reader.to_eof()
+            data = reader.to_eof(limit=max_response_bytes)
 
         if _remaining(deadline) <= 0:
             raise UpstreamTimeout("正文读完时已过总时限")
@@ -504,6 +550,8 @@ def stream_sse(url: str, payload: dict, headers: dict | None = None,
                   else _env_float("MEMORY_PROXY_TOTAL_TIMEOUT", 300.0))
     read = float(read_timeout if read_timeout is not None
                  else _env_float("MEMORY_LLM_READ_TIMEOUT", min(30.0, total)))
+    if not math.isfinite(total) or total <= 0 or not math.isfinite(read) or read <= 0:
+        raise UpstreamTransportError("upstream_invalid_timeout")
     parts = urlsplit(url)
     scheme = (parts.scheme or "http").lower()
     if scheme not in ("http", "https"):
@@ -569,9 +617,10 @@ def stream_sse(url: str, payload: dict, headers: dict | None = None,
                 if not size_line:
                     continue
                 size = int(size_line.split(b";")[0].strip() or b"0", 16)
+                if size < 0:raise UpstreamTransportError("upstream_invalid_chunk_size")
                 if size == 0:
                     break
-                yield reader.exact(size)
+                yield from reader.iter_exact(size)
                 reader.exact(2)
         elif "content-length" in resp_headers:
             try:
@@ -579,23 +628,14 @@ def stream_sse(url: str, payload: dict, headers: dict | None = None,
             except Exception:
                 want = -1
             if want >= 0:
-                yield reader.exact(want)
+                yield from reader.iter_exact(want)
             else:
-                yield reader.to_eof()
+                yield from reader.iter_eof()
         else:
             # 无 Content-Length / Transfer-Encoding：正文到 EOF 结束。
             # until("\r\n\r\n") 已把头后面的正文留在 reader.buf 里，必须先发出去，
             # 否则「响应头与正文同一次写入」的对端会让我们静默丢掉首段。
-            if reader.buf:
-                buffered, reader.buf = reader.buf, b""
-                yield buffered
-            while True:
-                chunk = reader._fill("body")     # noqa: SLF001 - 同模块内的读循环
-                if chunk is None:
-                    continue                     # 这一片没等到数据，继续等（deadline 由 _fill 判）
-                if chunk == b"":
-                    break                        # 对端关连接，流结束
-                yield chunk
+            yield from reader.iter_eof()
     except UpstreamTimeout as exc:
         timing["deadline_hit"] = True
         raise UpstreamTimeout(f"{exc}（阶段 {timing.get('phase')}）") from exc

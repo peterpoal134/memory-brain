@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -232,11 +233,15 @@ class Store:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 yield
-            except BaseException:
-                self.conn.rollback()
-                raise
-            else:
                 self.conn.commit()
+            except BaseException as error:
+                try:
+                    self.conn.rollback()
+                except BaseException as rollback_error:
+                    # Keep the original failure/cancellation as the primary
+                    # exception. A failed rollback must never look successful.
+                    raise error from rollback_error
+                raise
 
     def close(self):
         with self.lock:
@@ -950,13 +955,40 @@ class Store:
         destination = Path(destination).expanduser().resolve()
         if self.path != ":memory:" and destination == Path(self.path).resolve():raise ValueError("backup must not overwrite the active database")
         destination.parent.mkdir(parents=True,exist_ok=True)
-        if destination.exists():raise ValueError("backup destination already exists")
         with self.lock:
-            backup = sqlite3.connect(str(destination))
+            # SQLite waits for an open source write transaction to settle.
+            # With this same connection and RLock, that can only wait on itself.
+            if self.conn.in_transaction:
+                raise ValueError("backup requires a settled database transaction")
+            # Check-and-create atomically, including concurrent backup callers.
+            # Never truncate an old snapshot and never delete one on failure.
             try:
+                descriptor = os.open(str(destination), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                raise ValueError("backup destination already exists") from None
+            identity = os.fstat(descriptor)
+            os.close(descriptor)
+            backup = None
+            try:
+                backup = sqlite3.connect(str(destination))
                 self.conn.backup(backup)
                 integrity = backup.execute("PRAGMA integrity_check").fetchone()[0]
-            finally:backup.close()
+                if integrity != "ok":
+                    raise sqlite3.DatabaseError("backup integrity check failed")
+                backup.close()
+                backup = None
+            except BaseException:
+                if backup is not None:
+                    try:backup.close()
+                    except BaseException:pass
+                # Only remove the file exclusively created by this invocation.
+                # If another actor replaced it, leave that different file alone.
+                try:
+                    current = destination.stat()
+                    if (current.st_dev,current.st_ino)==(identity.st_dev,identity.st_ino):
+                        destination.unlink()
+                except OSError:pass
+                raise
         return {"path":str(destination),"integrity":integrity,"bytes":destination.stat().st_size}
 
     def export_json(self, owner):

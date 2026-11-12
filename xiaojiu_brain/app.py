@@ -278,6 +278,14 @@ class BrainApp:
 
     def close(self):
         self._stop.set()
-        if self._maintenance_thread:self._maintenance_thread.join(2)
+        if self._maintenance_thread and self._maintenance_thread is not threading.current_thread():
+            self._maintenance_thread.join(2)
+        maintenance_stopped=not bool(self._maintenance_thread and self._maintenance_thread.is_alive())
         life_stopped=self.life.stop()
-        if self.worker.stop() and life_stopped is not False:self.store.close()
+        worker_stopped=self.worker.stop()
+        if worker_stopped and life_stopped is not False and maintenance_stopped:
+            self.store.close()
+            return True
+        # Never wait on a Store lock held by a task that exceeded its stop
+        # budget, or close a connection while that task is still using it.
+        return False

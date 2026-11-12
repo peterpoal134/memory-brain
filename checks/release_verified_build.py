@@ -7,20 +7,20 @@ from pathlib import Path
 import hashlib, io, json, shutil, zipfile
 
 root=Path(__file__).resolve().parents[1]
-expected=json.loads((root/'checks/release-inputs-0.2.4.json').read_text('utf8'))
+expected=json.loads((root/'checks/release-inputs-0.2.5.json').read_text('utf8'))
 latest=json.loads((root/'artifacts/public-plugin-package/LATEST.json').read_text('utf8'))
 archive=Path(latest['archive']).resolve(); stage=Path(latest['stage']).resolve()
 assert archive.is_relative_to(root) and stage.is_relative_to(root)
 digest=lambda data:hashlib.sha256(data).hexdigest()
 with zipfile.ZipFile(archive) as z:
     assert z.testzip() is None
-    prefix='memory-brain-dsh-0.2.4/'
+    prefix='memory-brain-dsh-0.2.5/'
     files={name[len(prefix):]:z.read(name) for name in z.namelist() if name.startswith(prefix) and not name.endswith('/')}
     assert set(files)==set(expected['archive_files']), 'Archive allowlist changed'
     for name,sha in expected['source_sha256'].items():
         assert digest(files[name])==sha, 'Source differs from reviewed input: '+name
     info=json.loads(files['PUBLIC-RELEASE.json'])
-    assert info['version']==info['plugin_version']==info['kernel_version']=='0.2.4'
+    assert info['version']==info['plugin_version']==info['kernel_version']=='0.2.5'
     # config.build_id historically hashes platform-native relative paths.
     # Both exact reviewed IDs represent the same SHA-checked 37 source files;
     # the full source and logical wheel checks below are still mandatory.
@@ -38,5 +38,5 @@ for name in ('PUBLIC-RELEASE.json','SHA256SUMS.json',expected['kernel_wheel']):
     shutil.copyfile(stage/name,destination)
 checksum=archive.with_name(archive.name+'.sha256')
 checksum.write_text(digest(archive.read_bytes())+'  '+archive.name+'\n',encoding='utf8')
-print(json.dumps({'version':'0.2.4','reviewed_sources_match':True,'wheel_content_matches':True,
+print(json.dumps({'version':'0.2.5','reviewed_sources_match':True,'wheel_content_matches':True,
     'archive_sha256':digest(archive.read_bytes()),'files':len(files)}))

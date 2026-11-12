@@ -47,6 +47,8 @@ class Config:
         if not 1024<=int(self.port)<=65535:raise ValueError('Invalid port')
         if not self.owner or len(self.api_token)<24:raise ValueError('A local owner and a management token of at least 24 characters are required')
         if not 128<=int(self.token_budget)<=8192:raise ValueError('token_budget must be 128..8192')
+        if isinstance(self.model_timeout,bool) or not isinstance(self.model_timeout,(int,float)) or not 0<self.model_timeout<=600 or not math.isfinite(self.model_timeout):
+            raise ValueError('model_timeout must be a finite number above 0 and at most 600 seconds')
         if isinstance(self.derive_interval,bool) or not isinstance(self.derive_interval,(int,float)) or not 1<=self.derive_interval<=600 or not math.isfinite(self.derive_interval):
             raise ValueError('derive_interval must be a finite number from 1..600 seconds')
         if type(self.derive_batch_messages) is not int or not 1<=self.derive_batch_messages<=12:

@@ -5,19 +5,53 @@ from http.cookies import SimpleCookie,CookieError
 from pathlib import Path
 from urllib.parse import parse_qs,unquote,urlsplit
 
+class RequestBodyTimeout(TimeoutError):
+    pass
+
 class BrainServer(ThreadingHTTPServer):
     daemon_threads=True
     allow_reuse_address=True
+    # Bound abandoned/slow local clients independently of provider deadlines.
+    max_request_threads=32
+    request_socket_timeout=10.0
+    request_body_timeout=10.0
     def __init__(self,address,app):
         self.app=app
+        self._request_slots=threading.BoundedSemaphore(self.max_request_threads)
         if ':' in address[0]:self.address_family=socket.AF_INET6
         super().__init__(address,Handler)
         from .browser_auth import BrowserSessions
         self.browser_sessions=BrowserSessions(app.data_dir/'browser-sessions.json',app.config.api_token)
         self.browser_cookie_name='memory_brain_session_'+str(self.server_port)
 
+    def process_request(self,request,client_address):
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                request.settimeout(.1)
+                request.sendall(b'HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\nRetry-After: 1\r\n\r\n')
+                request.shutdown(socket.SHUT_WR)
+                # A tiny bounded drain prevents an unread normal request from
+                # turning the already sent 503 into a Windows TCP reset.
+                request.settimeout(.02)
+                try:request.recv(8192)
+                except OSError:pass
+            except OSError:pass
+            finally:self.shutdown_request(request)
+            return
+        try:super().process_request(request,client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self,request,client_address):
+        try:super().process_request_thread(request,client_address)
+        finally:self._request_slots.release()
+
 class Handler(BaseHTTPRequestHandler):
     server_version='MemoryBrain'
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(self.server.request_socket_timeout)
     def log_message(self,format,*args):pass  # Never log payload, token or query string.
     @property
     def app(self):return self.server.app
@@ -31,9 +65,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
     def _bytes(self,status,body,content_type='application/json; charset=utf-8',attachment=None,cookie=None):
         if status>=400:self._discard_rejected_body()
-        self._headers(status,content_type,len(body),attachment,cookie)
-        try:self.wfile.write(body)
-        except (BrokenPipeError,ConnectionResetError):pass
+        try:
+            self._headers(status,content_type,len(body),attachment,cookie)
+            self.wfile.write(body)
+        except OSError:
+            # A closed browser connection is not an application failure. Do not
+            # attempt a second response after headers or a body write failed.
+            self.close_connection=True
     def _json(self,status,data=None,error=None,cookie=None):
         obj={'ok':error is None}
         if error is None:obj['data']=data
@@ -98,9 +136,24 @@ class Handler(BaseHTTPRequestHandler):
             try:self.connection.settimeout(old_timeout)
             except OSError:pass
     def _body(self):
+        if self.headers.get('Transfer-Encoding'):raise ValueError('不支持分块请求正文')
         length=int(self.headers.get('Content-Length','0'))
         if length<0 or length>2*1024*1024:raise ValueError('请求内容过大')
-        raw=self.rfile.read(length) if length else b''
+        old_timeout=self.connection.gettimeout()
+        deadline=time.monotonic()+self.server.request_body_timeout
+        chunks=[];remaining=length
+        try:
+            while remaining:
+                wait=deadline-time.monotonic()
+                if wait<=0:raise RequestBodyTimeout('读取请求正文超时')
+                self.connection.settimeout(min(self.server.request_socket_timeout,wait))
+                try:chunk=self.rfile.read1(min(remaining,65536))
+                except TimeoutError as error:raise RequestBodyTimeout('读取请求正文超时') from error
+                if not chunk:raise ValueError('请求正文不完整')
+                chunks.append(chunk);remaining-=len(chunk)
+        finally:
+            self.connection.settimeout(old_timeout)
+        raw=b''.join(chunks)
         self._request_body_consumed=True
         value=json.loads(raw.decode('utf8')) if length else {}
         if not isinstance(value,dict):raise ValueError('请求必须为JSON对象')
@@ -124,6 +177,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._bytes(200,target.read_bytes(),mime+('; charset=utf-8' if mime.startswith(('text/','application/javascript')) else ''))
         if method=='POST' and path=='/v1/session/bootstrap':
             try:result=app.redeem_ticket(self._body().get('ticket',''))
+            except RequestBodyTimeout:return self._json(408,error='读取请求正文超时')
             except (ValueError,TypeError):return self._json(401,error='登录链接已过期或已使用')
             try:return self._json(200,result,cookie=self._new_browser_cookie())
             except Exception:return self._json(500,error='无法保存本机浏览器登录状态，请从桌面入口重试')
@@ -233,6 +287,7 @@ class Handler(BaseHTTPRequestHandler):
                 value['life']=app.life.export()
                 return self._bytes(200,json.dumps(value,ensure_ascii=False,indent=2).encode(),'application/json; charset=utf-8','xiaojiu-brain-export.json')
             return self._json(404,error='接口不存在')
+        except RequestBodyTimeout:return self._json(408,error='读取请求正文超时')
         except (ValueError,TypeError,json.JSONDecodeError) as e:return self._json(400,error=str(e)[:300])
         except KeyError:return self._json(404,error='记录不存在或无权访问')
         except Exception as e:return self._json(500,error='操作失败：'+type(e).__name__)

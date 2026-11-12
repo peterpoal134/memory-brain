@@ -1,6 +1,6 @@
 {
   "name": "dsh-xiaojiu-brain",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "main": "./xiaojiu-brain.mjs",
   "exports": "./xiaojiu-brain.mjs",
