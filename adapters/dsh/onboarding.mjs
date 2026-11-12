@@ -46,11 +46,12 @@ function publicContextManagement(value){
     'estimated_total_tokens','limit','limit_tokens','input_limit','input_limit_tokens','reserved','reserved_tokens','remaining','remaining_tokens',
     'effective_limit','effective_input_limit','request_tokens','history_tokens','memory_tokens','output_reserve_tokens',
     'estimated_before_tokens','estimated_after_tokens','estimated_compacted_tokens','context_window_tokens','reserved_output_tokens',
-    'checks','passed','blocked','unguarded','partial','warnings',
+    'checks','passed','blocked','unguarded','partial','warnings','estimated_input_bytes',
     'agents','summary_max_chars','summary_max_tokens','cooldown_ms','threshold_chars','head_chars','tail_chars',
     'threshold_ratio','retain_ratio','headroom_tokens','pressure_cooldown_ms',
     'summaries','pressure_attempts','pressure_deferred','pruned_results','pruned_chars','last_summary_chars']);
-  const booleanFields=new Set(['enabled','available','supported','blocked','estimated','active','stopped']);
+  const booleanFields=new Set(['enabled','available','supported','blocked','estimated','active','stopped',
+    'estimated_over_limit','input_estimate_advisory','reserve_check_applied']);
   const clean=source=>{
     const result={};if(!source||typeof source!=='object')return result;
     for(const [key,item]of Object.entries(source)){

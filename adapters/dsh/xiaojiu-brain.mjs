@@ -2,6 +2,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
@@ -81,7 +82,7 @@ export function catchUp(queue, session, { limit = 200, captureAfter = null } = {
     const olderThanCutover = captureAfter !== null && Number(event.time) <= captureAfter;
     for (const message of olderThanCutover ? [] : projection.get(index) || []) {
       const payload = { conversation_id: conversation, ...message };
-      if (!queue.enqueue(payload)) { blocked = true; break; }
+      if (!queue.enqueue(payload, { index, seq: event.seq })) { blocked = true; break; }
     }
     if (blocked) break; // Leave the gap before every newer message.
     queue.saveCursor(conversation, { index, identity: eventIdentity(event) });
@@ -106,12 +107,21 @@ function moduleSpecifier(value) {
 
 export async function createAdapter(ctx, config = {}) {
   const warnings = [], sessions = new Map(), cache = new Map();
+  const attachments = new Set(), listeners = [];
+  let originals = new WeakMap(), stopPromise;
+  const liveSessions = () => {
+    const result = [];
+    for (const ref of attachments) { const session = ref.deref(); if (session) result.push(session); else attachments.delete(ref); }
+    for (const [id, ref] of sessions) if (!ref.deref()) sessions.delete(id);
+    return result;
+  };
+  const listen = (event, handler) => { const off = ctx.on?.(event, handler); if (typeof off === 'function') listeners.push(off); };
   const warn = code => { warnings.push({ code, at: new Date().toISOString() }); if (warnings.length > 50) warnings.shift(); ctx.logger?.warn?.(`xiaojiu-brain: ${code}`); };
   const importantTool = { available: false, state: 'not_started' };
   const profileContext = { supported: null, state: 'not_requested', included: false, omitted_count: 0 };
   let contextManagement=null, sessionHistory=null;
   const stopSupport = async () => { try { await config.compactionSupport?.stop(); } catch { warn('context_support_stop_failed'); } };
-  const controller = { enabled: false, warnings, queue: null, chatUsage: null, stop: async () => { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose();await stopSupport(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, capture: { attached_sessions: sessions.size, live_discovery: true }, chat_usage: controller.chatUsage?.status() || { enabled:false }, important_tool: { ...importantTool }, profile_context: { ...profileContext },
+  const controller = { enabled: false, warnings, queue: null, chatUsage: null, stop: async () => { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose();await stopSupport(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, capture: { attached_sessions: liveSessions().length, live_discovery: true }, chat_usage: controller.chatUsage?.status() || { enabled:false }, important_tool: { ...importantTool }, profile_context: { ...profileContext },
     session_history:sessionHistory?.status()||{enabled:false,available:false,tool_available:false,state:'not_started'},
     context_management:{compression:contextManagement?.status()||{state:'not_started'},budget:config.requestBudget?.status()||{state:'unavailable',active:false},support:config.compactionSupport?.status()||{state:'unavailable'}},
     request_injection: config.requestBridge?.status() || { mode: config.injectionMode || 'unverified_direct', active: controller.enabled } }) };
@@ -126,7 +136,7 @@ export async function createAdapter(ctx, config = {}) {
   const lifeTimeoutMs = Number.isFinite(configuredLifeTimeout) ? Math.max(1, Math.min(800, configuredLifeTimeout)) : 800;
   const configuredProfileTimeout = Number(config.profileTimeoutMs ?? 800);
   const profileTimeoutMs = Number.isFinite(configuredProfileTimeout) ? Math.max(1, Math.min(800, configuredProfileTimeout)) : 800;
-  let registry, member, timer, queue, toolDependency, toolUnregister, chatUsage;
+  let registry, member, timer, queue, toolDependency, toolUnregister, chatUsage, proto;
   const importantShutdown = new AbortController();
   const publishCapabilities = () => {
     if (!queue?.dir) return;
@@ -142,7 +152,6 @@ export async function createAdapter(ctx, config = {}) {
     finally { try { fs.unlinkSync(temporary); } catch { /* already renamed, or unavailable diagnostic storage */ } }
   };
   const setImportantStatus = (state, available = false) => { importantTool.state = state; importantTool.available = available; publishCapabilities(); };
-  const originals = new Map();
   try {
     let captureAfter = null;
     if (config.captureAfter !== undefined && config.captureAfter !== null) {
@@ -150,26 +159,91 @@ export async function createAdapter(ctx, config = {}) {
       captureAfter = Date.parse(config.captureAfter);
     }
     const mod = await import(moduleSpecifier(config.sessionModule));
-    const proto = mod.SessionStore?.prototype;
+    proto = mod.SessionStore?.prototype;
     if (!proto || typeof proto.prepare !== 'function') throw new Error('session_module_unsupported');
     if (proto[PREPARE]?.members.size) throw new Error('adapter_already_enabled_in_process');
     queue = new DurableQueue({ dir: config.queueDir || path.join(os.homedir(), '.xiaojiu-brain', 'dsh-queue'),
       baseUrl, token, fetchImpl, maxPending: config.maxPending || 20000, timeoutMs, onAlert: warn });
     queue.init();
     controller.queue = queue;
+    // The queue's exclusive writer lock also owns this recovery outbox. It is
+    // disk-backed rather than retaining disposed Session objects in memory.
+    const recoveryDir = path.join(queue.dir, 'session-recovery');
+    fs.mkdirSync(recoveryDir, { recursive: true, mode: 0o700 });
+    const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+    const recoveryFiles = conversation => fs.readdirSync(recoveryDir).filter(file =>
+      /^[a-f0-9]{64}-\d{16}-[a-f0-9]{64}\.json$/.test(file) && (!conversation || file.startsWith(digest(conversation) + '-'))).sort();
+    const spool = (payload, position) => {
+      if (queue.closed) throw new Error('session_recovery_queue_closed');
+      if (queue.has(payload)) return queue.enqueue(payload); // Verify immutable body too.
+      const key = JSON.stringify([payload.conversation_id, payload.message_id, payload.role]);
+      const order = Number.isSafeInteger(position.seq) && position.seq >= 0 ? position.seq : position.index;
+      const file = path.join(recoveryDir, `${digest(payload.conversation_id)}-${String(order).padStart(16, '0')}-${digest(key)}.json`);
+      const row = { payload, bodyHash: digest(JSON.stringify(payload)) };
+      if (fs.existsSync(file)) {
+        if (fs.readFileSync(file, 'utf8') !== JSON.stringify(row)) throw new Error('session_recovery_identity_conflict');
+        return true;
+      }
+      const tmp = `${file}.${process.pid}-${crypto.randomBytes(8).toString('hex')}.tmp`;
+      let fd;
+      try {
+        fd = fs.openSync(tmp, 'wx', 0o600); fs.writeFileSync(fd, JSON.stringify(row)); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
+        try { fs.linkSync(tmp, file); } // Publish only a complete fsynced file.
+        catch (error) {
+          if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS'].includes(error.code)) throw error;
+          // Same-directory rename is safe here only under our queue writer lock.
+          if (fs.existsSync(file)) { if (fs.readFileSync(file, 'utf8') !== JSON.stringify(row)) throw new Error('session_recovery_identity_conflict'); }
+          else fs.renameSync(tmp, file);
+        }
+      } finally { if (fd !== undefined) fs.closeSync(fd); try { fs.unlinkSync(tmp); } catch {} }
+      return true;
+    };
+    const drainRecovery = (conversation, limit = 50) => {
+      const files = recoveryFiles(conversation);
+      for (const name of files.slice(0, limit)) {
+        const file = path.join(recoveryDir, name), row = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (!row.payload || row.bodyHash !== digest(JSON.stringify(row.payload))) throw new Error('session_recovery_invalid');
+        const key = JSON.stringify([row.payload.conversation_id, row.payload.message_id, row.payload.role]);
+        if (queue.acknowledged.has(key)) { fs.unlinkSync(file); continue; }
+        // An unacknowledged recovery receipt survives even after main enqueue.
+        if (!queue.enqueue(row.payload)) return false;
+      }
+      return files.length <= limit;
+    };
+    const preserve = session => {
+      if (config.captureEnabled === false || !Array.isArray(session?.log)) return;
+      try {
+        catchUp({ cursor: id => queue.cursor(id), saveCursor: (id, cursor) => queue.saveCursor(id, cursor), enqueue: spool },
+          session, { limit: session.log.length + 1, captureAfter });
+      } catch { warn('session_release_capture_not_durable_host_replay_required'); }
+    };
+    const release = session => {
+      const saved = originals.get(session);
+      if (!saved) { chatUsage?.detach(session); return; }
+      preserve(session); chatUsage?.detach(session);
+      // Never restore another same-ID instance or overwrite a later wrapper.
+      if (session.append === saved.wrapped) session.append = saved.original;
+      if (session[INSTALL] === saved.wrapped) delete session[INSTALL];
+      attachments.delete(saved.ref); originals.delete(session);
+      if (sessions.get(String(session.id))?.deref() === session) sessions.delete(String(session.id));
+      for (const key of cache.keys()) if (key.startsWith(String(session.id) + '\0')) cache.delete(key);
+    };
     if (config.chatUsageEnabled !== false) {
       chatUsage = new ChatUsageCollector({ dir:path.join(queue.dir,'chat-usage'),baseUrl,token,fetchImpl,
         timeoutMs:config.chatUsageTimeoutMs || 3000,intervalMs:config.chatUsageIntervalMs || 1000,onWarning:warn });
       try { chatUsage.init(); controller.chatUsage = chatUsage; }
       catch { chatUsage.close(); chatUsage = null; warn('chat_usage_unavailable'); }
       if (chatUsage) {
-        ctx.on?.('session/event', session => { if (controller.enabled) chatUsage.attach(session); });
-        ctx.on?.('agent/assistant-stream', ({agent,frame}) => { if (controller.enabled) chatUsage.observeFrame(agent,frame); });
+        listen('session/event', session => { if (controller.enabled) chatUsage.attach(session); });
+        listen('agent/assistant-stream', ({agent,frame}) => { if (controller.enabled) chatUsage.observeFrame(agent,frame); });
       }
     }
     const scan = session => {
       if (config.captureEnabled === false) return;
-      try { for (let n = 0; n < 5; n++) if (catchUp(queue, session, { limit: config.catchupLimit || 200, captureAfter }) < (config.catchupLimit || 200)) break; }
+      try {
+        if (!drainRecovery(String(session.id))) return;
+        for (let n = 0; n < 5; n++) if (catchUp(queue, session, { limit: config.catchupLimit || 200, captureAfter }) < (config.catchupLimit || 200)) break;
+      }
       catch { warn('session_capture_failed_pending_will_retry'); }
     };
     const ensureArchived = async (session, selectedSeqs, signal) => {
@@ -178,6 +252,7 @@ export async function createAdapter(ctx, config = {}) {
       try{
         const events=[...session.log],selected=new Set(selectedSeqs),conversation=String(session.id||'');
         if(!conversation)return false;
+        if(!drainRecovery(conversation))return false;
         const projection=archivalProjection(events,events.length),originals=new Map();
         for(let index=0;index<events.length;index++){
           const event=events[index];if(!selected.has(event.seq))continue;
@@ -222,9 +297,10 @@ export async function createAdapter(ctx, config = {}) {
       chatUsage?.attach(session);
       if (!session || session[INSTALL] || typeof session.append !== 'function') return;
       if (session.__fishRawQueueInstalled) { warn('legacy_rawqueue_detected_disable_old_plugin'); return; }
-      sessions.set(String(session.id), session); originals.set(session, session.append);
       const original = session.append;
-      const wrapped = function (...args) { const event = original.apply(this, args); scan(this); return event; };
+      const wrapped = function (...args) { const event = original.apply(this, args); if (controller.enabled) scan(this); return event; };
+      const ref = new WeakRef(session);
+      sessions.set(String(session.id), ref); attachments.add(ref); originals.set(session, { original, wrapped, ref });
       session.append = wrapped; session[INSTALL] = wrapped; scan(session);
     };
     if (!proto[PREPARE]) {
@@ -236,7 +312,7 @@ export async function createAdapter(ctx, config = {}) {
     controller.enabled = true;
     const bindCurrentSession = session => {
       if (!controller.enabled || config.captureEnabled === false || !session?.id || !Array.isArray(session.log)) return false;
-      member(session); scan(session); return sessions.get(String(session.id)) === session;
+      member(session); scan(session); return originals.has(session) && drainRecovery(String(session.id));
     };
     const historyTimeout = Number(config.historyTimeoutMs ?? 2000);
     sessionHistory = createSessionHistory({captureMessage,bindSession:bindCurrentSession,queue,fetchImpl,baseUrl,token,
@@ -261,13 +337,19 @@ export async function createAdapter(ctx, config = {}) {
         }
       }
     };
-    ctx.on?.('session/created', session => { if (controller.enabled && config.captureEnabled !== false) member(session); });
-    ctx.on?.('session/event', session => {
+    listen('session/created', session => { if (controller.enabled && config.captureEnabled !== false) member(session); });
+    listen('session/event', session => {
       if (!controller.enabled || config.captureEnabled === false) return;
       member(session); scan(session);
     });
+    listen('session/disposed', session => release(session));
     discoverLive();
-    const tick = async () => { discoverLive(); for (const session of sessions.values()) scan(session); await queue.flush(); queue.sweep(); };
+    let ticking = false;
+    const tick = async () => {
+      if (!controller.enabled || ticking) return; ticking = true;
+      try { drainRecovery(); discoverLive(); for (const session of liveSessions()) scan(session); await queue.flush(); queue.sweep(); }
+      finally { ticking = false; }
+    };
     timer = setInterval(() => { tick().catch(() => warn('queue_tick_failed')); }, Math.max(50, config.intervalMs || 1000)); timer.unref?.();
     const recall = async (payload, next) => {
       const decision = await next();
@@ -391,7 +473,7 @@ export async function createAdapter(ctx, config = {}) {
         return decision;
       } catch (error) { config.requestBridge?.clear(payload?.agent); throw error; }
     };
-    ctx.on?.('agent/pre-step', handlePreStep);
+    listen('agent/pre-step', handlePreStep);
     controller.recall = handlePreStep;
     if (config.importantToolEnabled === false) setImportantStatus('disabled');
     else setImportantStatus('waiting_tools');
@@ -446,24 +528,33 @@ export async function createAdapter(ctx, config = {}) {
         try { await installTool(ctx); } catch { toolsUnavailable('memory_tool_registration_failed'); }
       } else { toolsUnavailable('memory_tool_runtime_unavailable'); }
     }
-    controller.stop = async () => {
+    controller.stop = () => stopPromise ||= (async () => {
       controller.enabled = false;sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); importantShutdown.abort(); clearInterval(timer); registry.members.delete(member);
+      for (const off of listeners.splice(0).reverse()) { try { off(); } catch { warn('adapter_listener_cleanup_failed'); } }
+      for (const session of liveSessions()) release(session);
+      originals = new WeakMap();
       await stopSupport();
       await chatUsage?.stop();
       if (toolDependency?.dispose) await toolDependency.dispose();
       if (toolUnregister) { toolUnregister(); toolUnregister = null; }
       setImportantStatus('stopped');
-      for (const [session, original] of originals) if (session.append === session[INSTALL]) { session.append = original; delete session[INSTALL]; }
       if (!registry.members.size && proto.prepare === registry.wrapped) { proto.prepare = registry.original; delete proto[PREPARE]; }
       // Do not remove a lock while an HTTP delivery is still in flight.
       const end = Date.now() + timeoutMs + 250;
       while (queue.flushing && Date.now() < end) await new Promise(r => setTimeout(r, 20));
-      queue.close(); sessions.clear(); cache.clear();
-    };
-    ctx.on?.('dispose', () => controller.stop());
+      queue.close(); sessions.clear(); attachments.clear(); cache.clear();
+    })();
+    listen('dispose', () => controller.stop());
     ctx.effect?.(() => () => controller.stop());
     ctx.logger?.info?.('xiaojiu-brain: enabled; visible messages only; request-level recall');
-  } catch (e) { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); await stopSupport();await chatUsage?.stop(); warn(String(e.message || 'adapter_initialization_failed').replace(/[^a-zA-Z0-9_:.-]/g, '')); queue?.close(); }
+  } catch (e) {
+    controller.enabled = false; clearInterval(timer); registry?.members.delete(member);
+    if (registry && !registry.members.size && proto?.prepare === registry.wrapped) { proto.prepare = registry.original; delete proto[PREPARE]; }
+    for (const off of listeners.splice(0).reverse()) { try { off(); } catch {} }
+    for (const session of liveSessions()) { const saved = originals.get(session); if (saved && session.append === saved.wrapped) session.append = saved.original; if (saved && session[INSTALL] === saved.wrapped) delete session[INSTALL]; }
+    originals = new WeakMap(); attachments.clear(); sessions.clear(); cache.clear();
+    sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); await stopSupport();await chatUsage?.stop(); warn(String(e.message || 'adapter_initialization_failed').replace(/[^a-zA-Z0-9_:.-]/g, '')); queue?.close();
+  }
   return controller;
 }
 

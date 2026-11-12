@@ -7,16 +7,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { BoundedDurableIndex, forEachJsonLine, appendJsonLine } from './bounded-durable-index.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const keyOf = r => JSON.stringify([r.conversation_id, r.message_id, r.role]);
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 function persist(file, value, exclusive = false) {
   const tmp = `${file}.${crypto.randomUUID()}.tmp`;
-  const fd = fs.openSync(tmp, 'wx', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); }
-  finally { fs.closeSync(fd); }
   try {
+    const fd = fs.openSync(tmp, 'wx', 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
     if (exclusive) {
       try { fs.linkSync(tmp, file); }
       catch (e) {
@@ -31,12 +32,15 @@ function persist(file, value, exclusive = false) {
 
 export class DurableQueue {
   constructor({ dir, baseUrl, token = '', fetchImpl = globalThis.fetch, maxPending = 20000,
-    timeoutMs = 3000, deliveredDays = 7, onAlert = () => {} } = {}) {
+    timeoutMs = 3000, deliveredDays = 7, onAlert = () => {}, indexCacheEntries = 256,
+    indexCacheBytes = 1024 * 1024 } = {}) {
     if (!dir || !baseUrl) throw new Error('queue_dir_and_backend_required');
     this.dir = path.resolve(dir); this.baseUrl = String(baseUrl).replace(/\/+$/, '');
     this.token = token; this.fetch = fetchImpl; this.maxPending = Math.max(1, maxPending);
     this.timeoutMs = Math.max(100, timeoutMs); this.deliveredDays = deliveredDays;
-    this.onAlert = onAlert; this.seen = new Map(); this.acknowledged = new Set(); this.flushing = false; this.closed = false;
+    this.onAlert = onAlert; this.indexOptions = { maxCacheEntries: indexCacheEntries, maxCacheBytes: indexCacheBytes };
+    this.seen = null; this.acknowledged = null; this.indexRecoveryRequired = false;
+    this.flushing = false; this.closed = false;
     this.state = { delivered: 0, failed: 0, alerts: 0, rejected: 0, last_error: null };
   }
   alert(code) {
@@ -62,38 +66,57 @@ export class DurableQueue {
     this.lockNonce = crypto.randomUUID();
     try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, nonce: this.lockNonce })); fs.fsyncSync(fd); }
     finally { fs.closeSync(fd); }
+    try {
     for (const name of ['pending', 'delivered', 'failed', 'cursors']) fs.mkdirSync(path.join(this.dir, name), { recursive: true, mode: 0o700 });
     const manifest = path.join(this.dir, 'backend.json');
     if (fs.existsSync(manifest) && json(manifest).baseUrl !== this.baseUrl) {
       this.close(); throw new Error('queue_backend_changed_use_new_directory');
     }
     if (!fs.existsSync(manifest)) persist(manifest, { protocol: 1, baseUrl: this.baseUrl });
-    const seen = path.join(this.dir, 'seen.jsonl');
-    if (fs.existsSync(seen)) for (const line of fs.readFileSync(seen, 'utf8').split('\n')) {
-      if (!line) continue;
-      try { const r = JSON.parse(line); this.seen.set(r.key, r.bodyHash); } catch { this.alert('seen_record_corrupt'); }
-    }
-    const acked = path.join(this.dir, 'acked.jsonl');
-    if (fs.existsSync(acked)) for (const line of fs.readFileSync(acked, 'utf8').split('\n')) {
-      if (!line) continue;
-      try { this.acknowledged.add(JSON.parse(line).key); } catch { this.alert('ack_record_corrupt'); }
-    }
+    this.seen = new BoundedDurableIndex({ dir: path.join(this.dir, 'identity-index'), ...this.indexOptions });
+    this.acknowledged = new BoundedDurableIndex({ dir: path.join(this.dir, 'ack-index'), ...this.indexOptions });
+    this.recoverIndexes();
+    return this;
+    } catch (error) { this.alert('queue_index_initialization_failed'); this.close(); throw error; }
+  }
+  recoverIndexes() {
+    // Keep both legacy journals intact for rollback. Stream them so startup RAM
+    // is bounded, including queues created before disk receipts were available.
+    const recovery = { repairTrailing: true, onRepair: () => this.alert('queue_journal_torn_tail_quarantined') };
+    forEachJsonLine(path.join(this.dir, 'seen.jsonl'), r => {
+      if (typeof r?.key !== 'string' || !r.key || !/^[a-f0-9]{64}$/.test(r.bodyHash))
+        throw new Error('seen_record_corrupt');
+      this.seen.set(r.key, r.bodyHash);
+    }, recovery);
+    forEachJsonLine(path.join(this.dir, 'acked.jsonl'), r => {
+      if (typeof r?.key !== 'string' || !r.key) throw new Error('ack_record_corrupt');
+      this.acknowledged.set(r.key, true);
+    }, recovery);
     let maximum = 0;
     for (const folder of ['pending', 'delivered', 'failed']) for (const name of fs.readdirSync(path.join(this.dir, folder))) {
       if (!/^\d{16}-[a-f0-9]+\.json$/.test(name)) continue;
       maximum = Math.max(maximum, Number(name.slice(0, 16)));
-      try { const r = json(path.join(this.dir, folder, name)); if (r.key && r.bodyHash) { this.seen.set(r.key, r.bodyHash); if (folder === 'delivered') this.acknowledged.add(r.key); } } catch { /* flush moves broken pending files visibly */ }
+      let r;
+      try {
+        r = json(path.join(this.dir, folder, name));
+        if (!r.payload || r.key !== keyOf(r.payload) || r.bodyHash !== hash(JSON.stringify(r.payload))) throw new Error();
+      } catch { this.alert('queue_record_corrupt_at_init'); continue; /* flush retains broken pending in failed */ }
+      this.seen.set(r.key, r.bodyHash);
+      if (folder === 'delivered') this.acknowledged.set(r.key, true);
     }
-    this.nextSeq = maximum + 1;
-    return this;
+    this.nextSeq = Math.max(this.nextSeq || 1, maximum + 1); this.indexRecoveryRequired = false;
   }
   pendingFiles() { return fs.readdirSync(path.join(this.dir, 'pending')).filter(n => /^\d{16}-[a-f0-9]+\.json$/.test(n)).sort(); }
-  stats() { return { ...this.state, pending: this.pendingFiles().length, failed_files: fs.readdirSync(path.join(this.dir, 'failed')).filter(x => x.endsWith('.json')).length }; }
+  stats() { return { ...this.state, pending: this.pendingFiles().length,
+    failed_files: fs.readdirSync(path.join(this.dir, 'failed')).filter(x => x.endsWith('.json')).length,
+    index_cache: { seen: this.seen?.cacheStats(), acknowledged: this.acknowledged?.cacheStats() } }; }
   enqueue(payload) {
     if (this.closed) throw new Error('queue_closed');
+    if (this.indexRecoveryRequired) this.recoverIndexes();
     const key = keyOf(payload), bodyHash = hash(JSON.stringify(payload));
-    if (this.seen.has(key)) {
-      if (this.seen.get(key) !== bodyHash) { this.alert('message_identity_body_changed'); throw new Error('message_identity_body_changed'); }
+    const known = this.seen.get(key);
+    if (known !== undefined) {
+      if (known !== bodyHash) { this.alert('message_identity_body_changed'); throw new Error('message_identity_body_changed'); }
       return { duplicate: true };
     }
     if (this.pendingFiles().length >= this.maxPending) { this.state.rejected++; this.alert('queue_capacity'); return null; }
@@ -104,17 +127,18 @@ export class DurableQueue {
       catch (e) { if (e.code !== 'EEXIST') { this.alert('queue_disk_write'); throw e; } }
     }
     // The payload is durable before the advisory seen log or cursor can advance.
-    this.seen.set(key, bodyHash);
+    try { this.seen.set(key, bodyHash); }
+    catch (error) { this.indexRecoveryRequired = true; this.alert('seen_index_write_failed_payload_safe'); throw error; }
     try {
-      const fd = fs.openSync(path.join(this.dir, 'seen.jsonl'), 'a', 0o600);
-      try { fs.writeSync(fd, JSON.stringify({ key, bodyHash }) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    } catch { this.alert('seen_write_failed_payload_safe'); }
+      appendJsonLine(path.join(this.dir, 'seen.jsonl'), { key, bodyHash });
+    } catch { this.indexRecoveryRequired = true; this.alert('seen_write_failed_payload_safe'); }
     return { accepted: true, name };
   }
   cursor(conversation) { try { return json(path.join(this.dir, 'cursors', hash(conversation) + '.json')); } catch { return null; } }
   saveCursor(conversation, cursor) { persist(path.join(this.dir, 'cursors', hash(conversation) + '.json'), cursor); }
-  has(payload) { return this.seen.has(keyOf(payload)); }
+  has(payload) { if (this.indexRecoveryRequired) this.recoverIndexes(); return this.seen.has(keyOf(payload)); }
   async drainUntil(payload, budgetMs = this.timeoutMs) {
+    if (this.indexRecoveryRequired) this.recoverIndexes();
     const key = keyOf(payload), deadline = Date.now() + Math.max(0, budgetMs);
     if (!this.seen.has(key)) return false;
     while (!this.acknowledged.has(key) && Date.now() < deadline && !this.closed) {
@@ -127,6 +151,7 @@ export class DurableQueue {
     if (this.flushing || this.closed) return;
     this.flushing = true;
     try {
+      if (this.indexRecoveryRequired) this.recoverIndexes();
       const deadline = Date.now() + budgetMs;
       for (const name of this.pendingFiles().slice(0, maxRecords)) {
         if (Date.now() >= deadline) break;
@@ -140,10 +165,13 @@ export class DurableQueue {
             body: JSON.stringify(record.payload), signal: ac.signal });
           const reply = await response.json().catch(() => null);
           if (response.ok && reply?.ok === true && (reply.data?.accepted === true || reply.data?.duplicate === true)) {
-            const fd = fs.openSync(path.join(this.dir, 'acked.jsonl'), 'a', 0o600);
-            try { fs.writeSync(fd, JSON.stringify({ key: record.key }) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-            this.acknowledged.add(record.key);
-            fs.renameSync(from, path.join(this.dir, 'delivered', name)); this.state.delivered++; this.state.last_error = null;
+            try {
+              appendJsonLine(path.join(this.dir, 'acked.jsonl'), { key: record.key });
+              this.acknowledged.set(record.key, true);
+              fs.renameSync(from, path.join(this.dir, 'delivered', name)); this.state.delivered++; this.state.last_error = null;
+            } catch {
+              this.indexRecoveryRequired = true; this.alert('queue_ack_persist_failed_payload_safe'); break;
+            }
           } else if ([400, 409, 422].includes(response.status)) {
             fs.renameSync(from, path.join(this.dir, 'failed', name)); this.state.failed++; this.alert('backend_rejected_' + response.status);
           } else { this.alert('backend_unconfirmed_' + response.status); break; }
@@ -161,6 +189,7 @@ export class DurableQueue {
   }
   close() {
     this.closed = true;
+    this.seen?.clearCache(); this.acknowledged?.clearCache();
     try { const lock = json(this.lock); if (this.lockNonce && lock.pid === process.pid && lock.nonce === this.lockNonce) fs.unlinkSync(this.lock); } catch { /* no owned lock */ }
   }
 }

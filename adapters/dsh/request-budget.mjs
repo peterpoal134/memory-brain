@@ -1,14 +1,15 @@
 /** Read-only guard for the final request snapshot.
  *
- * UTF-8 JSON bytes are used as a deliberately conservative text-token proxy,
- * not as a provider tokenizer. Non-text pricing and later provider projections
- * remain explicitly partial. No message, tool, history or model control is cut.
+ * UTF-8 JSON bytes and a heuristic token reference are diagnostics only. They
+ * are not a provider tokenizer and never block on estimated input occupancy.
+ * Only a known window exhausted by declared output/safety reserves is rejected.
+ * Non-text pricing stays partial. No request or native overflow handling is cut.
  */
 export const CONTEXT_BUDGET_ERROR_CODE = 'memory_brain_context_budget_exceeded';
 
 export class ContextBudgetError extends Error {
   constructor() {
-    super('本次请求的估算输入超过上下文预算，已在发送前停止。请先压缩上下文，或核对输入上限、模型窗口和输出预留。');
+    super('模型窗口不足以容纳已声明的输出预留与安全余量，已在发送前停止。请核对模型窗口、maxTokens和安全余量。');
     this.name = 'ContextBudgetError';
     this.code = CONTEXT_BUDGET_ERROR_CODE;
   }
@@ -72,9 +73,12 @@ function estimateInput(request) {
   const framing = 512 + messages.length * 16 + (Array.isArray(request.tools) ? request.tools.length * 8 : 0);
   // File handles acquire a fixed instruction and execution-world path later.
   // This allowance is only an estimate, hence file requests stay partial.
-  const tokens = Buffer.byteLength(encoded, 'utf8') + framing + fileCount * 1024;
-  if (!integer(tokens)) throw new TypeError('request_serialization_unavailable');
-  return { tokens, partial };
+  const bytes = Buffer.byteLength(encoded, 'utf8');
+  // A rough diagnostic, never a claim about this provider's tokenizer. In
+  // particular, raw UTF-8 bytes must not be compared with a token window.
+  const tokens = Math.ceil(bytes / 3) + framing + fileCount * 1024;
+  if (!integer(bytes) || !integer(tokens)) throw new TypeError('request_serialization_unavailable');
+  return { bytes, tokens, partial };
 }
 
 export function createRequestBudget({ enabled = true, maxInputTokens = null, safetyTokens = 2048, onWarning } = {}) {
@@ -87,7 +91,8 @@ export function createRequestBudget({ enabled = true, maxInputTokens = null, saf
     checks: 0, passed: 0, blocked: 0, unguarded: 0, partial: 0, warnings: 0,
     active: false, scope: enabled ? 'awaiting_request' : 'disabled', last_reason: null,
     estimated_input_tokens: null, input_limit_tokens: null, context_window_tokens: null,
-    reserved_output_tokens: null,
+    reserved_output_tokens: null, estimated_input_bytes: null, estimation_basis: null,
+    estimated_over_limit: null, input_estimate_advisory: true, reserve_check_applied: false,
   };
   function status() {
     // No provider, model, message, identity, source path or exception is stored.
@@ -106,6 +111,8 @@ export function createRequestBudget({ enabled = true, maxInputTokens = null, saf
     state.last_reason = unavailableReasons.has(reason) ? reason : 'guard_unavailable';
     state.estimated_input_tokens = null; state.input_limit_tokens = null;
     state.context_window_tokens = null; state.reserved_output_tokens = null;
+    state.estimated_input_bytes = null; state.estimation_basis = null;
+    state.estimated_over_limit = null; state.reserve_check_applied = false;
     state.unguarded++;
     notify(state.last_reason);
   }
@@ -117,6 +124,10 @@ export function createRequestBudget({ enabled = true, maxInputTokens = null, saf
     state.input_limit_tokens = null;
     state.context_window_tokens = null;
     state.reserved_output_tokens = null;
+    state.estimated_input_bytes = null;
+    state.estimation_basis = null;
+    state.estimated_over_limit = null;
+    state.reserve_check_applied = false;
     if (!request || typeof request !== 'object' || !Array.isArray(request.messages)) {
       unavailable('request_shape_unsupported');
       return request;
@@ -127,6 +138,8 @@ export function createRequestBudget({ enabled = true, maxInputTokens = null, saf
     const capacity = requestCapacity(request, preparedCall, agent);
     const reserve = integer(request.maxTokens) ? request.maxTokens : null;
     state.estimated_input_tokens = estimate.tokens;
+    state.estimated_input_bytes = estimate.bytes;
+    state.estimation_basis = 'utf8_json_bytes_div3_heuristic';
     state.context_window_tokens = capacity;
     state.reserved_output_tokens = reserve;
     let limit = maxInputTokens;
@@ -137,6 +150,18 @@ export function createRequestBudget({ enabled = true, maxInputTokens = null, saf
       limit = limit === null ? capacityLimit : Math.min(limit, capacityLimit);
     }
     state.input_limit_tokens = limit;
+    state.estimated_over_limit = limit === null ? null : estimate.tokens > limit;
+    state.reserve_check_applied = capacity !== null && (reserve !== null || safetyTokens >= capacity);
+    // These are declared controls in one known token unit, not a text guess.
+    // Unknown output reservation cannot be invented; safety alone can still
+    // exhaust a known window. Equality also leaves no room for any input.
+    if (capacity !== null && (safetyTokens >= capacity || reserve !== null && reserve + safetyTokens >= capacity)) {
+      state.scope = 'invalid_output_reserve';
+      state.blocked++;
+      state.last_reason = CONTEXT_BUDGET_ERROR_CODE;
+      notify(CONTEXT_BUDGET_ERROR_CODE);
+      throw new ContextBudgetError();
+    }
     if (capacity === null) {
       state.scope = 'needs_capacity'; state.last_reason = 'needs_capacity';
       notify('needs_capacity');
@@ -147,20 +172,14 @@ export function createRequestBudget({ enabled = true, maxInputTokens = null, saf
       state.scope = 'partial_non_text'; state.last_reason = 'non_text_pricing_unavailable';
       notify('non_text_pricing_unavailable');
     } else {
-      state.scope = 'estimated_text_json_bytes'; state.last_reason = 'within_estimated_budget';
-      state.active = true;
+      state.scope = 'advisory_text_json'; state.last_reason = state.estimated_over_limit ? 'input_estimate_over_reference' : 'within_advisory_estimate';
     }
     if (capacity === null || reserve === null || estimate.partial) state.partial++;
     if (limit === null) {
       state.unguarded++; state.passed++;
       return request;
     }
-    if (estimate.tokens > limit) {
-      state.blocked++;
-      state.last_reason = CONTEXT_BUDGET_ERROR_CODE;
-      notify(CONTEXT_BUDGET_ERROR_CODE);
-      throw new ContextBudgetError();
-    }
+    if (state.estimated_over_limit) notify('input_estimate_over_reference');
     state.passed++;
     return request;
   }

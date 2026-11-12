@@ -26,6 +26,28 @@ function policyOptions(input) {
   return Object.freeze(value);
 }
 
+// An idle or restored agent can be prepared after its last turn has closed.
+// The host's replacement tool/result must only be written inside a real open
+// turn. Weak ownership and an append cursor avoid retaining or rescanning logs.
+const sessionTurnStates = new WeakMap();
+function hasOpenTurn(session) {
+  const log = session?.log;
+  if (!Array.isArray(log)) return false;
+  let state = sessionTurnStates.get(session);
+  if (!state || state.log !== log || state.index > log.length ||
+      state.index > 0 && log[state.index - 1] !== state.lastEvent) {
+    state = { log, index: 0, lastEvent: undefined, openTurn: false };
+    sessionTurnStates.set(session, state);
+  }
+  for (; state.index < log.length; state.index++) {
+    const event = log[state.index];
+    if (event?.type === 'turn/start') state.openTurn = true;
+    else if (event?.type === 'turn/end') state.openTurn = false;
+    state.lastEvent = event;
+  }
+  return state.openTurn;
+}
+
 function noOpenCompaction(session) {
   const events = Array.isArray(session?.log) ? session.log :
     typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : null;
@@ -260,7 +282,7 @@ export function createCompactionSupport({ ctx, enabled = true, basicCompactionMo
       view.pruner_state = pruner ? ownedPruners.has(original(pruner)) ? 'owned_native' : 'host_existing' : 'unavailable';
       // The native operation is synchronous and retains original tool events.
       // Never prune while a summary transaction holds the durable session lock.
-      if (pruner && typeof pruner.pruneSession === 'function' && !signal?.aborted && noOpenCompaction(agent.session)) {
+      if (pruner && typeof pruner.pruneSession === 'function' && !signal?.aborted && hasOpenTurn(agent.session) && noOpenCompaction(agent.session)) {
         const result = pruner.pruneSession(agent.session);
         view.pruned_results += Array.isArray(result?.pruned) ? result.pruned.length : 0;
         view.pruned_chars += Number.isFinite(result?.charsRemoved) ? result.charsRemoved : 0;
