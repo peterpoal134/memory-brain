@@ -22,6 +22,12 @@ export const VERIFIED_LOOP_BUILDS=Object.freeze({
       step:'3897f0b4f560d26ba21f640e29d1d549cf7094877d9c411178146b33d2e242b7',
     }),
   }),
+  f09f60814d4e96a880f41b9fc3832f33c56a28f954f48810d8439ce83ad6ffa8:Object.freeze({
+    name:'official_022_rc3',methods:Object.freeze({
+      buildRequest:'7833829fbcb6fbcfef27c2d771e3adbdcdecf89a3ef7837f71185fad08128f42',
+      step:'dba57c14397d89bdf3c7b78fad8635ea23f425731aab01a0d285ccac47090b8e',
+    }),
+  }),
   a8b456b07ad59a77b65be20702cb07fb202e646f7783c5f0bbd3f8d3d48d4937:Object.freeze({
     name:'dsha_build190_reconstructed',methods:Object.freeze({
       buildRequest:'7833829fbcb6fbcfef27c2d771e3adbdcdecf89a3ef7837f71185fad08128f42',
