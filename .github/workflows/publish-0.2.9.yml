@@ -3,7 +3,6 @@ name: Publish verified 0.2.9 DSH compatibility update
 on:
   push:
     branches: [release/0.2.9-dsh-compat]
-    paths: [.github/workflows/publish-0.2.9.yml]
   workflow_dispatch:
 
 permissions:

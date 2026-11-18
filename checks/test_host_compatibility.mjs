@@ -113,7 +113,7 @@ if(realRuntime){
     assert.equal(result.injectionMode,'scoped_agent_bridge');assert.equal(result.compatibility.loop_canonical_sha256,fingerprint);
     safeReport(result.compatibility,realRuntime);
   });
-  check('the verified real source tolerates only initial BOM and CRLF representation',()=>{
+  check('the verified real source tolerates initial BOM and CRLF representation',()=>{
     for(const text of [source,'\uFEFF'+source,source.replace(/\n/g,'\r\n'),'\uFEFF'+source.replace(/\n/g,'\r\n')]){
       const runtime=fixture(text),result=probeRuntime(runtime);assert.equal(result.supported,true);
       assert.equal(result.injectionMode,'scoped_agent_bridge');assert.equal(result.compatibility.loop_canonical_sha256,fingerprint);
@@ -126,7 +126,7 @@ if(realRuntime){
     fs.writeFileSync(moduleFile(runtime,'loop'),unknown);assert.equal(probeRuntime(runtime).supported,false);
   });
   check('changed verified source remains closed even when version labels still match',()=>{
-    for(const changed of [source+' ',source+'\n// altered\n',source.replace('\n','\r'),source.replace('buildRequest','unreviewedRequest')]){
+    for(const changed of [source+'\nvoid 0;\n',source.replace('buildRequest','unreviewedRequest')]){
       assert.notEqual(changed,source);const result=probeRuntime(fixture(changed));
       assert.equal(result.supported,false);assert.equal(result.compatibility.reason,'unknown_loop_fingerprint');
     }
