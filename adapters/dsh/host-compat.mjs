@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {VERIFIED_LOOP_BUILDS} from './request-bridge.mjs';
+import {matchVerifiedLoop} from './request-bridge.mjs';
 
 const packageRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const sha256=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
@@ -53,8 +53,7 @@ export function probeRuntime(runtimePath){
   if(!loopBytes){compatibility.reason=compatibility.read_errors.some(unreadable)?'required_modules_unreadable':'required_modules_missing';return result;}
   try{new TextDecoder('utf-8',{fatal:true}).decode(loopBytes);code=loopBytes.toString('utf8');}
   catch{compatibility.reason='loop_source_invalid_utf8';return result;}
-  // Formatting tolerance is intentionally limited to the initial UTF-8 BOM
-  // and CRLF encoding. Spaces, comments, bare CR, strings and logic are kept.
+  // The raw and representation-normalized digests remain available to users.
   const canonical=code.replace(/^\uFEFF/,'').replace(/\r\n/g,'\n');
   compatibility.loop_canonical_sha256=sha256(Buffer.from(canonical,'utf8'));
   compatibility.modules.loop.canonical_sha256=compatibility.loop_canonical_sha256;
@@ -63,11 +62,12 @@ export function probeRuntime(runtimePath){
   result.sessionModule=pathToFileURL(files.session).href;result.toolsModule=pathToFileURL(files.tools).href;result.llmModule=pathToFileURL(files.llm).href;
   if(compatibility.modules.compaction.sha256!==null)result.compactionModule=pathToFileURL(files.compaction).href;
   for(const key of ['basicCompaction','toolResultPruner','tokenMeter','cordis'])if(compatibility.modules[key].sha256!==null)result[key+'Module']=pathToFileURL(files[key]).href;
-  const native=/\bwithRequestMessages\s*\(/.test(code)&&/this\.withRequestMessages\s*\(/.test(code)&&/decision\.requestMessages\b/.test(code);
-  const exact=Object.hasOwn(VERIFIED_LOOP_BUILDS,compatibility.loop_sha256),formatOnly=Object.hasOwn(VERIFIED_LOOP_BUILDS,compatibility.loop_canonical_sha256);
   if(Number(process.versions.node.split('.')[0])<22){compatibility.reason='node_22_or_later_required';return result;}
-  if(native){result.injectionMode='native_snapshot';compatibility.reason='native_request_messages_markers';}
-  else if(exact||formatOnly){result.injectionMode='scoped_agent_bridge';compatibility.reason=exact?'verified_stock_source':'verified_stock_source_formatting';}
-  else{compatibility.reason='unknown_loop_fingerprint';return result;}
+  const verified=matchVerifiedLoop(code,compatibility.loop_sha256,canonical,compatibility.loop_canonical_sha256);
+  if(!verified){compatibility.reason='unknown_loop_fingerprint';return result;}
+  result.injectionMode=verified.mode;
+  result.bridgeSourceSha256=verified.sourceSha256;
+  result.bridgeSyntaxEquivalent=verified.syntaxEquivalent===true;
+  compatibility.reason=verified.reason;
   result.supported=true;compatibility.supported=true;compatibility.mode=result.injectionMode;return result;
 }

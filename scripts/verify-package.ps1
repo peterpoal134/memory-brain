@@ -1,5 +1,7 @@
 ﻿param([string]$Root = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
+# Use this PowerShell host's utility module even when launched from a different host.
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $manifest = Join-Path $Root 'SHA256SUMS.json'
 if (-not (Test-Path -LiteralPath $manifest)) { return }
 $base = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar

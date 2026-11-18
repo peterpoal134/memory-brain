@@ -77,7 +77,7 @@ test('discovery attempt inspection and output are bounded to thirty-two records'
 test('declared discovery codes, compatibility reasons and OS errors survive validation',()=>{
   const codes=['resolved','not_directory','modules_not_found','same_module_set','module_identity_mismatch','module_resolution_failed','candidate_limit','unknown',
     'runtime_unavailable','asar_runtime_unavailable','runtime_access_denied','required_modules_missing','required_modules_unreadable','loop_source_invalid_utf8',
-    'node_22_or_later_required','native_request_messages_markers','verified_stock_source','verified_stock_source_formatting','unknown_loop_fingerprint',
+    'node_22_or_later_required','native_request_messages_markers','verified_native_snapshot','verified_syntax_equivalent','verified_stock_source','verified_stock_source_formatting','unknown_loop_fingerprint',
     'host_module_identity_mismatch','dsh_runtime_not_resolved','ENOENT','ENOTDIR','EACCES','EPERM','EIO','MODULE_NOT_FOUND',
     'ERR_MODULE_NOT_FOUND','ERR_PACKAGE_PATH_NOT_EXPORTED'];
   for(const code of codes){const input=basic();input.discovery.attempts=[{source:'host_module_anchor',layout:'asar',stage:'resolve',code}];

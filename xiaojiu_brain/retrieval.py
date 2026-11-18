@@ -77,7 +77,7 @@ def _prepare_cosine_query(vector):
 
 
 def _cosine_for_query(prepared, vector):
-    if prepared is None or not isinstance(vector, (list, tuple)) or len(prepared[0]) != len(vector):
+    if prepared is None or not isinstance(vector, (list, tuple, memoryview)) or len(prepared[0]) != len(vector):
         return None
     try:
         values = [float(v) for v in vector]
@@ -178,7 +178,9 @@ class Retriever:
         excluded_external = {x for x in (exclude_message_ids or []) if isinstance(x, str)}
         # Read only this owner's scope before any top-k ranking. Archived
         # restricted projections still protect the same source spans.
-        scoped = self.store.documents(owner, conversation_id=conversation_id, as_of=cutoff, include_archived=True)
+        embedder = self.embedder
+        scoped = self.store.documents(owner, conversation_id=conversation_id, as_of=cutoff,
+            include_archived=True, vector_format='compact' if embedder is not None else 'none')
         scoped = [d for d in scoped if d.get("owner") == owner
                   and (conversation_id is None or d.get("conversation_id") == conversation_id)
                   and d.get("status", "active") != "deleted" and float(d.get("recorded_at", 0)) <= cutoff]
@@ -268,7 +270,8 @@ class Retriever:
         try:
             for kind, route in [("raw", "raw_lexical"), ("derived", "derived_lexical")]:
                 lexical = self.store.lexical_search(owner, query, conversation_id=conversation_id,
-                    limit=40, as_of=cutoff, kind=kind, include_archived=include_archived,cutoff_message_id=cutoff_message_id)
+                    limit=40, as_of=cutoff, kind=kind, include_archived=include_archived,
+                    cutoff_message_id=cutoff_message_id, include_details=False)
                 for d in lexical:
                     key = str(d["id"])
                     if key in eligible and key not in routes[route]:
@@ -276,14 +279,14 @@ class Retriever:
         except Exception as exc:
             degraded.append("lexical_provider_error:" + type(exc).__name__)
         similarities = {}
-        if self.embedder is None:
+        if embedder is None:
             degraded.append("embedding_not_configured")
         else:
             try:
-                vectors = self.embedder.embed_many([query])
+                vectors = embedder.embed_many([query])
                 if len(vectors) != 1 or _cosine(vectors[0], vectors[0]) is None:
                     raise ValueError("invalid query embedding")
-                model = str(self.embedder.model)
+                model = str(embedder.model)
                 prepared_query = _prepare_cosine_query(vectors[0])
                 for key, d in eligible.items():
                     if d.get("vector_model") != model:

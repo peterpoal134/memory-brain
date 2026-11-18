@@ -39,6 +39,53 @@ export function captureMessage(event) {
 }
 function eventIdentity(event) { return `${event?.seq}|${event?.type}|${event?.data?.id || event?.data?.message?.id || ''}`; }
 
+function archiveIdentifier(value) {
+  return typeof value === 'string' && value.length <= 512 && value.trim() && !value.includes('\0');
+}
+
+function synchronous(value) {
+  if (typeof value?.then !== 'function') return value;
+  Promise.resolve(value).catch(() => {});
+  throw new Error('archive_session_async_api_unsupported');
+}
+
+function archiveSessionStore(ctx) {
+  try {
+    const sessions = synchronous(ctx.get?.('sessions'));
+    if (typeof ctx.on !== 'function' || typeof sessions?.list !== 'function' ||
+        typeof sessions.get !== 'function' || sessions.get.constructor?.name === 'AsyncFunction') return null;
+    const live = synchronous(sessions.list());
+    if (!Array.isArray(live)) return null;
+    if (live.length && (!archiveIdentifier(live[0]?.id) ||
+        synchronous(sessions.get(live[0].id)) !== live[0])) return null;
+    return sessions;
+  } catch { return null; }
+}
+
+export const canUseArchiveSessionEvents = ctx => Boolean(archiveSessionStore(ctx));
+
+function archiveSnapshot(session) {
+  if (!archiveIdentifier(session?.id)) throw new Error('archive_session_identity_invalid');
+  const log = typeof session.snapshotEvents === 'function' ? synchronous(session.snapshotEvents()) : session.log;
+  const inherited = session.inheritedEventCount;
+  if (!Array.isArray(log) || (inherited !== undefined &&
+      (!Number.isSafeInteger(inherited) || inherited < 0 || inherited > log.length)) ||
+      (session.header?.isSeeded === true && inherited === undefined)) {
+    throw new Error('archive_session_snapshot_unsupported');
+  }
+  return { id: session.id, log, inheritedEventCount: inherited ?? 0 };
+}
+
+function committedMessage(event, index, captureAfter, inheritedCount) {
+  if (event?.seq !== index || typeof event.type !== 'string' || !Number.isSafeInteger(event.time) ||
+      Math.abs(event.time) > 8640000000000000) throw new Error('archive_session_event_unsupported');
+  if (index < inheritedCount || event.time <= captureAfter) return [];
+  const original = event.type === 'assistant/message' ? event.data?.message : event.data;
+  if (!archiveIdentifier(original?.id)) return [];
+  const message = captureMessage(event);
+  return message?.text.trim() ? [message] : [];
+}
+
 function archivalProjection(events, until) {
   const inbox = { 'next-turn': [], 'next-step': [] }, inserted = new Map(), output = new Map();
   for (let index = 0; index < until; index++) {
@@ -68,25 +115,32 @@ function archivalProjection(events, until) {
   return output;
 }
 
-export function catchUp(queue, session, { limit = 200, captureAfter = null } = {}) {
+export function catchUp(queue, session, { limit = 200, captureAfter = null, committedOnly = false } = {}) {
   const conversation = String(session?.id || '');
   if (!conversation || !Array.isArray(session.log)) return 0;
   const events = session.log, cursor = queue.cursor(conversation); let start = 0, scanned = 0;
   if (cursor && events[cursor.index] && eventIdentity(events[cursor.index]) === cursor.identity) start = cursor.index + 1;
   if (start >= events.length) return 0;
-  const projection = archivalProjection(events, Math.min(events.length, start + limit));
+  const end = Math.min(events.length, start + limit);
+  const projection = committedOnly ? null : archivalProjection(events, end);
+  let completed = null;
   for (let index = start; index < events.length && scanned < limit; index++, scanned++) {
     const event = events[index]; let blocked = false;
     // Filter by the persistent output event (claim/visible settlement), not by
     // recorded_at: a pre-cutover inbox item claimed afterwards is new output.
     const olderThanCutover = captureAfter !== null && Number(event.time) <= captureAfter;
-    for (const message of olderThanCutover ? [] : projection.get(index) || []) {
+    const messages = committedOnly ? committedMessage(event, index, captureAfter, session.inheritedEventCount) :
+      olderThanCutover ? [] : projection.get(index) || [];
+    for (const message of messages) {
       const payload = { conversation_id: conversation, ...message };
       if (!queue.enqueue(payload, { index, seq: event.seq })) { blocked = true; break; }
     }
     if (blocked) break; // Leave the gap before every newer message.
-    queue.saveCursor(conversation, { index, identity: eventIdentity(event) });
+    completed = { index, identity: eventIdentity(event) };
   }
+  // Each original is already durable. If this write fails or capture throws
+  // before it, retrying from the previous cursor replays those durable keys.
+  if (completed) queue.saveCursor(conversation, completed);
   return scanned;
 }
 
@@ -106,8 +160,13 @@ function moduleSpecifier(value) {
 }
 
 export async function createAdapter(ctx, config = {}) {
+  const archiveOnly = config.archiveOnly === true;
+  if (archiveOnly) config = { ...config, chatUsageEnabled: false, contextEnabled: false,
+    importantToolEnabled: false, historyEnabled: false, requestBridge: undefined,
+    requestBudget: undefined, compactionSupport: undefined };
   const warnings = [], sessions = new Map(), cache = new Map();
   const attachments = new Set(), listeners = [];
+  const archiveDirty = archiveOnly ? new WeakSet() : null;
   let originals = new WeakMap(), stopPromise;
   const liveSessions = () => {
     const result = [];
@@ -121,10 +180,10 @@ export async function createAdapter(ctx, config = {}) {
   const profileContext = { supported: null, state: 'not_requested', included: false, omitted_count: 0 };
   let contextManagement=null, sessionHistory=null;
   const stopSupport = async () => { try { await config.compactionSupport?.stop(); } catch { warn('context_support_stop_failed'); } };
-  const controller = { enabled: false, warnings, queue: null, chatUsage: null, stop: async () => { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose();await stopSupport(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, capture: { attached_sessions: liveSessions().length, live_discovery: true }, chat_usage: controller.chatUsage?.status() || { enabled:false }, important_tool: { ...importantTool }, profile_context: { ...profileContext },
+  const controller = { enabled: false, warnings, queue: null, chatUsage: null, stop: async () => { sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose();await stopSupport(); }, status: () => ({ enabled: controller.enabled, warnings: [...warnings], queue: controller.queue?.stats() || null, capture: { attached_sessions: liveSessions().length, live_discovery: true, ...(archiveOnly ? { mode: 'session_events' } : {}) }, chat_usage: controller.chatUsage?.status() || { enabled:false }, important_tool: { ...importantTool }, profile_context: { ...profileContext },
     session_history:sessionHistory?.status()||{enabled:false,available:false,tool_available:false,state:'not_started'},
     context_management:{compression:contextManagement?.status()||{state:'not_started'},budget:config.requestBudget?.status()||{state:'unavailable',active:false},support:config.compactionSupport?.status()||{state:'unavailable'}},
-    request_injection: config.requestBridge?.status() || { mode: config.injectionMode || 'unverified_direct', active: controller.enabled } }) };
+    request_injection: config.requestBridge?.status() || { mode: archiveOnly ? 'archive_only' : config.injectionMode || 'unverified_direct', active: !archiveOnly && controller.enabled } }) };
   adapters.set(ctx, controller);
   if (config.enabled !== true) return controller;
   const baseUrl = String(config.baseUrl || process.env.XIAOJIU_BRAIN_URL || 'http://127.0.0.1:18880').replace(/\/+$/, '');
@@ -158,10 +217,19 @@ export async function createAdapter(ctx, config = {}) {
       if (typeof config.captureAfter !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(config.captureAfter) || !Number.isFinite(Date.parse(config.captureAfter))) throw new Error('capture_after_invalid_iso_timestamp');
       captureAfter = Date.parse(config.captureAfter);
     }
-    const mod = await import(moduleSpecifier(config.sessionModule));
-    proto = mod.SessionStore?.prototype;
-    if (!proto || typeof proto.prepare !== 'function') throw new Error('session_module_unsupported');
-    if (proto[PREPARE]?.members.size) throw new Error('adapter_already_enabled_in_process');
+    const publicSessions = archiveOnly ? archiveSessionStore(ctx) : null;
+    if (archiveOnly) {
+      const activatedAt = config.archiveCaptureAfter ?? Date.now();
+      if (!Number.isSafeInteger(activatedAt) || activatedAt <= 0 || activatedAt > Date.now())
+        throw new Error('archive_capture_after_invalid');
+      captureAfter = Math.max(captureAfter ?? 0, activatedAt);
+      if (!publicSessions) throw new Error('archive_session_api_unavailable');
+    } else {
+      const mod = await import(moduleSpecifier(config.sessionModule));
+      proto = mod.SessionStore?.prototype;
+      if (!proto || typeof proto.prepare !== 'function') throw new Error('session_module_unsupported');
+      if (proto[PREPARE]?.members.size) throw new Error('adapter_already_enabled_in_process');
+    }
     queue = new DurableQueue({ dir: config.queueDir || path.join(os.homedir(), '.xiaojiu-brain', 'dsh-queue'),
       baseUrl, token, fetchImpl, maxPending: config.maxPending || 20000, timeoutMs, onAlert: warn });
     queue.init();
@@ -210,21 +278,29 @@ export async function createAdapter(ctx, config = {}) {
       }
       return files.length <= limit;
     };
+    const snapshot = session => archiveOnly ? archiveSnapshot(session) : session;
+    const captureOptions = { captureAfter, committedOnly: archiveOnly };
     const preserve = session => {
-      if (config.captureEnabled === false || !Array.isArray(session?.log)) return;
+      if (config.captureEnabled === false) return;
       try {
+        const history = snapshot(session);
+        if (!Array.isArray(history?.log)) return;
         catchUp({ cursor: id => queue.cursor(id), saveCursor: (id, cursor) => queue.saveCursor(id, cursor), enqueue: spool },
-          session, { limit: session.log.length + 1, captureAfter });
+          history, { ...captureOptions, limit: history.log.length + 1 });
       } catch { warn('session_release_capture_not_durable_host_replay_required'); }
     };
     const release = session => {
       const saved = originals.get(session);
       if (!saved) { chatUsage?.detach(session); return; }
-      preserve(session); chatUsage?.detach(session);
+      if (!archiveOnly || sessions.get(session.id)?.deref() === session) preserve(session);
+      chatUsage?.detach(session);
       // Never restore another same-ID instance or overwrite a later wrapper.
-      if (session.append === saved.wrapped) session.append = saved.original;
-      if (session[INSTALL] === saved.wrapped) delete session[INSTALL];
+      if (saved.wrapped) {
+        if (session.append === saved.wrapped) session.append = saved.original;
+        if (session[INSTALL] === saved.wrapped) delete session[INSTALL];
+      }
       attachments.delete(saved.ref); originals.delete(session);
+      archiveDirty?.delete(session);
       if (sessions.get(String(session.id))?.deref() === session) sessions.delete(String(session.id));
       for (const key of cache.keys()) if (key.startsWith(String(session.id) + '\0')) cache.delete(key);
     };
@@ -238,13 +314,27 @@ export async function createAdapter(ctx, config = {}) {
         listen('agent/assistant-stream', ({agent,frame}) => { if (controller.enabled) chatUsage.observeFrame(agent,frame); });
       }
     }
+    const archiveWarnings = new Set();
+    const warnArchive = code => { if (!archiveWarnings.has(code)) { archiveWarnings.add(code); warn(code); } };
     const scan = session => {
-      if (config.captureEnabled === false) return;
+      if (config.captureEnabled === false || archiveOnly && !archiveDirty.has(session)) return;
       try {
+        if (archiveOnly && synchronous(publicSessions.get(session.id)) !== session) return;
         if (!drainRecovery(String(session.id))) return;
-        for (let n = 0; n < 5; n++) if (catchUp(queue, session, { limit: config.catchupLimit || 200, captureAfter }) < (config.catchupLimit || 200)) break;
+        const history = snapshot(session), limit = config.catchupLimit || 200;
+        for (let n = 0; n < 5; n++) if (catchUp(queue, history, { ...captureOptions, limit }) < limit) break;
+        if (archiveOnly) {
+          const tail = history.log.length - 1, cursor = queue.cursor(history.id);
+          if (tail < 0 || cursor?.index === tail && cursor.identity === eventIdentity(history.log[tail]))
+            archiveDirty.delete(session);
+        }
       }
-      catch { warn('session_capture_failed_pending_will_retry'); }
+      catch (error) {
+        const code = error?.message;
+        if (archiveOnly && ['archive_session_async_api_unsupported','archive_session_event_unsupported',
+          'archive_session_snapshot_unsupported','archive_session_identity_invalid'].includes(code)) warnArchive(code);
+        else warn('session_capture_failed_pending_will_retry');
+      }
     };
     const ensureArchived = async (session, selectedSeqs, signal) => {
       if(!controller.enabled||config.captureEnabled===false||signal?.aborted||!Array.isArray(session?.log))return false;
@@ -288,13 +378,24 @@ export async function createAdapter(ctx, config = {}) {
         return !signal?.aborted;
       }catch{warn('context_archive_confirmation_failed');return false;}
     };
-    contextManagement=createContextManager({enabled:config.contextEnabled===true,
+    if (!archiveOnly) contextManagement=createContextManager({enabled:config.contextEnabled===true,
       triggerTurns:config.contextTriggerTurns??12,keepTurns:config.contextKeepTurns??4,
       timeoutMs:config.contextCompactionTimeoutMs??30000,compactionModule:config.compactionModule,
       prepareAgent:(agent,signal)=>config.compactionSupport?.prepareAgent(agent,signal),
       onWarning:warn,ensureArchived,shutdownSignal:importantShutdown.signal});
     member = session => {
       chatUsage?.attach(session);
+      if (archiveOnly) {
+        try {
+          if (!archiveIdentifier(session?.id) || originals.has(session) ||
+              synchronous(publicSessions.get(session.id)) !== session) return;
+          if (session.__fishRawQueueInstalled || session[INSTALL]) { warnArchive('legacy_rawqueue_detected_disable_old_plugin'); return; }
+          const ref = new WeakRef(session);
+          sessions.set(session.id, ref); attachments.add(ref); originals.set(session, { ref });
+          archiveDirty.add(session);
+        } catch { warnArchive('archive_session_lookup_unavailable'); }
+        return;
+      }
       if (!session || session[INSTALL] || typeof session.append !== 'function') return;
       if (session.__fishRawQueueInstalled) { warn('legacy_rawqueue_detected_disable_old_plugin'); return; }
       const original = session.append;
@@ -303,28 +404,38 @@ export async function createAdapter(ctx, config = {}) {
       sessions.set(String(session.id), ref); attachments.add(ref); originals.set(session, { original, wrapped, ref });
       session.append = wrapped; session[INSTALL] = wrapped; scan(session);
     };
-    if (!proto[PREPARE]) {
-      const original = proto.prepare, members = new Set();
-      const wrapped = function (...args) { const session = original.apply(this, args); for (const fn of members) { try { fn(session); } catch { /* adapter cannot break host */ } } return session; };
-      proto[PREPARE] = { original, wrapped, members }; proto.prepare = wrapped;
+    if (!archiveOnly) {
+      if (!proto[PREPARE]) {
+        const original = proto.prepare, members = new Set();
+        const wrapped = function (...args) { const session = original.apply(this, args); for (const fn of members) { try { fn(session); } catch { /* adapter cannot break host */ } } return session; };
+        proto[PREPARE] = { original, wrapped, members }; proto.prepare = wrapped;
+      }
+      registry = proto[PREPARE]; registry.members.add(member);
     }
-    registry = proto[PREPARE]; registry.members.add(member);
     controller.enabled = true;
     const bindCurrentSession = session => {
       if (!controller.enabled || config.captureEnabled === false || !session?.id || !Array.isArray(session.log)) return false;
       member(session); scan(session); return originals.has(session) && drainRecovery(String(session.id));
     };
     const historyTimeout = Number(config.historyTimeoutMs ?? 2000);
-    sessionHistory = createSessionHistory({captureMessage,bindSession:bindCurrentSession,queue,fetchImpl,baseUrl,token,
+    if (!archiveOnly) sessionHistory = createSessionHistory({captureMessage,bindSession:bindCurrentSession,queue,fetchImpl,baseUrl,token,
       timeoutMs:Number.isFinite(historyTimeout)?Math.max(100,Math.min(15000,Math.floor(historyTimeout))):2000,
       enabled:()=>controller.enabled && config.captureEnabled !== false && config.recallEnabled !== false && config.historyEnabled !== false,
       autoEnabled:config.historyAutoEnabled !== false,captureAfter,shutdownSignal:importantShutdown.signal,onWarning:warn});
-    if(config.historyEnabled === false)sessionHistory.setToolState('disabled');
+    if(config.historyEnabled === false)sessionHistory?.setToolState('disabled');
     // A hot attachment must also adopt sessions that already existed before
     // this adapter loaded. An idle source conversation may never pre-step again.
     const discoveryWarnings = new Set();
     const discoverLive = () => {
       if (!controller.enabled || config.captureEnabled === false) return;
+      if (archiveOnly) {
+        try {
+          const rows = synchronous(publicSessions.list());
+          if (!Array.isArray(rows)) throw new Error('archive_session_api_unavailable');
+          for (const session of rows) member(session);
+        } catch { warnArchive('archive_session_lookup_unavailable'); }
+        return;
+      }
       const adopt = session => { if (session?.id && Array.isArray(session.log)) member(session); };
       for (const name of ['sessions', 'agents']) {
         try {
@@ -340,7 +451,10 @@ export async function createAdapter(ctx, config = {}) {
     listen('session/created', session => { if (controller.enabled && config.captureEnabled !== false) member(session); });
     listen('session/event', session => {
       if (!controller.enabled || config.captureEnabled === false) return;
-      member(session); scan(session);
+      member(session);
+      if (archiveOnly) {
+        if (originals.has(session)) archiveDirty.add(session);
+      } else scan(session);
     });
     listen('session/disposed', session => release(session));
     discoverLive();
@@ -462,23 +576,37 @@ export async function createAdapter(ctx, config = {}) {
     };
     const handlePreStep = async (payload, next) => {
       try {
-        const decision = await recall(payload, next);
+        let original;
+        const decision = await recall(payload, async () => {
+          original = await next();
+          return original;
+        });
         if (config.requestBridge) {
-          if (!controller.enabled || payload?.signal?.aborted) config.requestBridge.clear(payload?.agent);
-          else {
-            try {
-              const staged = config.requestBridge.stage(payload, decision);
-              if (!staged.staged && !['step_not_admitted', 'aborted', 'disposed'].includes(staged.reason))
+          if (!controller.enabled || payload?.signal?.aborted) {
+            config.requestBridge.clear(payload?.agent);
+            return original;
+          }
+          try {
+            const staged = config.requestBridge.stage(payload, decision);
+            if (!staged.staged) {
+              if (!['step_not_admitted', 'aborted', 'disposed'].includes(staged.reason))
                 warn('request_bridge_agent_unsupported');
+              return original;
             }
-            catch { config.requestBridge.clear(payload?.agent); warn('request_bridge_agent_unsupported'); }
+          }
+          catch {
+            config.requestBridge.clear(payload?.agent);
+            warn('request_bridge_agent_unsupported');
+            return original;
           }
         }
         return decision;
       } catch (error) { config.requestBridge?.clear(payload?.agent); throw error; }
     };
-    listen('agent/pre-step', handlePreStep);
-    controller.recall = handlePreStep;
+    if (!archiveOnly) {
+      listen('agent/pre-step', handlePreStep);
+      controller.recall = handlePreStep;
+    }
     if (config.importantToolEnabled === false) setImportantStatus('disabled');
     else setImportantStatus('waiting_tools');
     if (config.importantToolEnabled !== false || config.historyEnabled !== false) {
@@ -533,7 +661,7 @@ export async function createAdapter(ctx, config = {}) {
       } else { toolsUnavailable('memory_tool_runtime_unavailable'); }
     }
     controller.stop = () => stopPromise ||= (async () => {
-      controller.enabled = false;sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); importantShutdown.abort(); clearInterval(timer); clearInterval(sweepTimer); registry.members.delete(member);
+      controller.enabled = false;sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); importantShutdown.abort(); clearInterval(timer); clearInterval(sweepTimer); registry?.members.delete(member);
       for (const off of listeners.splice(0).reverse()) { try { off(); } catch { warn('adapter_listener_cleanup_failed'); } }
       for (const session of liveSessions()) release(session);
       originals = new WeakMap();
@@ -542,7 +670,7 @@ export async function createAdapter(ctx, config = {}) {
       if (toolDependency?.dispose) await toolDependency.dispose();
       if (toolUnregister) { toolUnregister(); toolUnregister = null; }
       setImportantStatus('stopped');
-      if (!registry.members.size && proto.prepare === registry.wrapped) { proto.prepare = registry.original; delete proto[PREPARE]; }
+      if (registry && !registry.members.size && proto.prepare === registry.wrapped) { proto.prepare = registry.original; delete proto[PREPARE]; }
       // Do not remove a lock while an HTTP delivery is still in flight.
       const end = Date.now() + timeoutMs + 250;
       while (queue.flushing && Date.now() < end) await new Promise(r => setTimeout(r, 20));
@@ -550,12 +678,13 @@ export async function createAdapter(ctx, config = {}) {
     })();
     listen('dispose', () => controller.stop());
     ctx.effect?.(() => () => controller.stop());
-    ctx.logger?.info?.('xiaojiu-brain: enabled; visible messages only; request-level recall');
+    ctx.logger?.info?.(archiveOnly ? 'xiaojiu-brain: archive only; no automatic injection' :
+      'xiaojiu-brain: enabled; visible messages only; request-level recall');
   } catch (e) {
     controller.enabled = false; clearInterval(timer); clearInterval(sweepTimer); registry?.members.delete(member);
     if (registry && !registry.members.size && proto?.prepare === registry.wrapped) { proto.prepare = registry.original; delete proto[PREPARE]; }
     for (const off of listeners.splice(0).reverse()) { try { off(); } catch {} }
-    for (const session of liveSessions()) { const saved = originals.get(session); if (saved && session.append === saved.wrapped) session.append = saved.original; if (saved && session[INSTALL] === saved.wrapped) delete session[INSTALL]; }
+    for (const session of liveSessions()) { const saved = originals.get(session); if (saved?.wrapped && session.append === saved.wrapped) session.append = saved.original; if (saved?.wrapped && session[INSTALL] === saved.wrapped) delete session[INSTALL]; }
     originals = new WeakMap(); attachments.clear(); sessions.clear(); cache.clear();
     sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); await stopSupport();await chatUsage?.stop(); warn(String(e.message || 'adapter_initialization_failed').replace(/[^a-zA-Z0-9_:.-]/g, '')); await queue?.close();
   }

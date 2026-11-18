@@ -217,6 +217,8 @@ class Store:
           created_at REAL NOT NULL, updated_at REAL NOT NULL,
           UNIQUE(kind,dedupe_key));
         CREATE INDEX IF NOT EXISTS ix_jobs_available ON jobs(kind,status,available_at,id);
+        CREATE INDEX IF NOT EXISTS ix_jobs_policy_lease ON jobs(status,lease_until)
+          WHERE status='running' OR status='blocked_policy' OR status IN ('pending','retry','waiting_provider');
         CREATE TABLE IF NOT EXISTS model_attempts (
           attempt_id TEXT PRIMARY KEY, owner TEXT NOT NULL,
           started_at REAL NOT NULL, outcome TEXT NOT NULL, event_json TEXT NOT NULL);
@@ -605,25 +607,28 @@ class Store:
         if previous is not None:
             self._vector_cache_values -= len(previous[1])
 
-    def _decode_vector(self, owner, document_id, model, dimensions, encoded):
+    def _decode_vector(self, owner, document_id, model, dimensions, encoded, *, compact=False):
         key = (owner, document_id)
         fingerprint = (model, dimensions, hashlib.sha256(encoded.encode('utf8')).digest())
         cached = self._vector_cache.get(key)
         if cached is not None and cached[0] == fingerprint:
             self._vector_cache.move_to_end(key)
-            return list(cached[1])
+            return memoryview(cached[1]).toreadonly() if compact else list(cached[1])
         values = json.loads(encoded)
         self._discard_cached_vector(key)
         # set_vector writes floats. Do not coerce old/malformed JSON integer
         # arrays into floats: the public projection retains its original types.
-        # The compact mutable array stays private; callers always get a list.
-        if (isinstance(values, list) and len(values) <= self._vector_cache_max_values
+        if (isinstance(values, list) and (compact or len(values) <= self._vector_cache_max_values)
                 and all(type(v) is float for v in values)):
-            self._vector_cache[key] = (fingerprint, array('d', values))
-            self._vector_cache_values += len(values)
-            while (self._vector_cache_values > self._vector_cache_max_values
-                   or len(self._vector_cache) > self._vector_cache_max_entries):
-                self._discard_cached_vector(next(iter(self._vector_cache)))
+            packed = array('d', values)
+            if len(packed) <= self._vector_cache_max_values:
+                self._vector_cache[key] = (fingerprint, packed)
+                self._vector_cache_values += len(packed)
+                while (self._vector_cache_values > self._vector_cache_max_values
+                       or len(self._vector_cache) > self._vector_cache_max_entries):
+                    self._discard_cached_vector(next(iter(self._vector_cache)))
+            if compact:
+                return memoryview(packed).toreadonly()
         return values
 
     @contextmanager
@@ -639,7 +644,7 @@ class Store:
                 if owns_snapshot:
                     self.conn.rollback()
 
-    def _documents(self, rows):
+    def _documents(self, rows, *, vector_format):
         """Project one scoped, ordered result with bounded batch SQL reads."""
         results = [dict(row) for row in rows]
         by_id = {r['id']: r for r in results}
@@ -659,13 +664,15 @@ class Store:
                 by_id[source['document_id']]['source_refs'].append({
                     'message_id':source['message_id'], 'start':source['start'], 'end':source['end'],
                     'quote':source['text'][source['start']:source['end']]})
+            if vector_format == 'none':
+                continue
             for vector in self.conn.execute('''SELECT document_id,owner,model,dimensions,vector
                   FROM vectors WHERE document_id IN (''' + placeholders + ')', batch):
                 result = by_id[vector['document_id']]
                 if result['owner'] != vector['owner']:
                     continue
                 result['vector'] = self._decode_vector(result['owner'], result['id'],
-                    vector['model'], vector['dimensions'], vector['vector'])
+                    vector['model'], vector['dimensions'], vector['vector'], compact=vector_format == 'compact')
                 result['vector_model'] = vector['model']
         return results
 
@@ -705,7 +712,11 @@ class Store:
             else:
                 where.append(prefix+"kind IN ("+",".join("?" for _ in selected)+")");args.extend(selected)
 
-    def documents(self, owner, conversation_id=None, as_of=None, include_archived=False, kind=None, kinds=None):
+    def documents(self, owner, conversation_id=None, as_of=None, include_archived=False, kind=None, kinds=None,
+                  *, vector_format='list'):
+        """Use compact read-only doubles for internal recall, and lists for public documents."""
+        if vector_format not in ('list', 'compact', 'none'):
+            raise ValueError("invalid vector format")
         where,args = ["owner=?"],[owner]
         where.append("status IN ('active','archived')" if include_archived else "status='active'")
         if conversation_id is not None:
@@ -715,9 +726,11 @@ class Store:
         self._kind_filter(where,args,kind,kinds)
         with self._read_snapshot():
             rows = self.conn.execute("SELECT documents.*, (SELECT max(dep.message_id) FROM document_dependencies dep WHERE dep.document_id=documents.id) AS max_dependency_id FROM documents WHERE "+" AND ".join(where)+" ORDER BY recorded_at,id",args).fetchall()
-            return self._documents(rows)
+            return self._documents(rows, vector_format=vector_format)
 
-    def lexical_search(self, owner, query, conversation_id=None, limit=40, as_of=None, kind=None, include_archived=False, kinds=None, cutoff_message_id=None):
+    def lexical_search(self, owner, query, conversation_id=None, limit=40, as_of=None, kind=None,
+                       include_archived=False, kinds=None, cutoff_message_id=None, *, include_details=True):
+        """Retrieve ranked keyword hits, optionally with only IDs and lexical scores."""
         tokens = list(dict.fromkeys(_lexical_tokens(str(query or ""))))[:256]
         if not tokens:
             return []
@@ -734,11 +747,12 @@ class Store:
             args.append(cutoff_message_id)
         self._kind_filter(where,args,kind,kinds,prefix="d.")
         args.append(max(0,min(1000,int(limit))))
+        projection = "d.*" if include_details else "d.id"
         with self.lock:
-            found = self.conn.execute("""SELECT d.*,bm25(document_fts) AS lexical_score
+            found = self.conn.execute(f"""SELECT {projection},bm25(document_fts) AS lexical_score
                 FROM document_fts JOIN documents d ON d.id=document_fts.document_id WHERE """+
                 " AND ".join(where)+" ORDER BY lexical_score,d.recorded_at DESC,d.id LIMIT ?",args)
-            return [self._document(r) for r in found]
+            return [self._document(r) if include_details else dict(r) for r in found]
 
     def get_document(self, owner, document_id):
         with self.lock:

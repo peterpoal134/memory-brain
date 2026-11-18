@@ -41,15 +41,60 @@ with tempfile.TemporaryDirectory(prefix='memory-http-stability-') as folder:
         first=partial(server);connections.append(first)
         second=partial(server);connections.append(second)
         time.sleep(.08)
-        third=connect(server);connections.append(third);third.sendall(b'GET /health HTTP/1.0\r\n')
-        try:response=third.recv(4096)
-        except socket.timeout:response=b''
+        third=connect(server);connections.append(third)
+        try:
+            third.sendall(b'GET /health HTTP/1.0\r\n\r\n')
+            response=third.recv(4096)
+        except OSError:
+            response=b''
         record('excess concurrent clients receive bounded 503',response.startswith(b'HTTP/1.0 503'))
         time.sleep(.45)
         try:body_reply=first.recv(4096)
         except socket.timeout:body_reply=b''
         record('abandoned body releases handler and returns 408',body_reply.startswith(b'HTTP/1.0 408'))
         record('request capacity recovers after body timeout',health(server)==200)
+    finally:cleanup(server,thread,connections)
+
+    server,thread=start(folder);connections=[]
+    try:
+        # Saturate the slots without depending on request-thread scheduling.
+        for _ in range(server.max_request_threads):
+            assert server._request_slots.acquire(blocking=False)
+        waiting=threading.Event()
+        actions=[]
+        get_request=server.get_request
+        def observed_accept():
+            accepted,address=get_request()
+            def receive(size):
+                actions.append('receive')
+                waiting.set()
+                return accepted.recv(size)
+            def reply(data):
+                actions.append('reply')
+                return accepted.sendall(data)
+            return SimpleNamespace(settimeout=accepted.settimeout,recv=receive,sendall=reply,
+                                   shutdown=accepted.shutdown,close=accepted.close),address
+        server.get_request=observed_accept
+        delayed=connect(server);connections.append(delayed)
+        # Send only once the server has started its drain, while the real
+        # socket is still open. A send-before-drain baseline fails the order
+        # check even on Windows runs where the reset does not happen.
+        ready=waiting.wait(1)
+        response=b''
+        if ready:
+            try:
+                delayed.sendall(b'GET /health HTTP/1.0\r\n\r\n')
+                response=delayed.recv(4096)
+            except OSError:
+                pass
+        record('accepted delayed GET is drained before replying 503',
+               ready and actions==['receive','reply'] and response.startswith(b'HTTP/1.0 503'))
+        silent=connect(server);connections.append(silent)
+        started=time.monotonic()
+        try:response=silent.recv(4096)
+        except OSError:response=b''
+        record('overload drain is bounded when the client sends no data',
+               response.startswith(b'HTTP/1.0 503') and time.monotonic()-started<.4)
     finally:cleanup(server,thread,connections)
 
     server,thread=start(folder);connections=[]

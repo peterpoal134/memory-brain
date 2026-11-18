@@ -1,8 +1,16 @@
 from __future__ import annotations
 import argparse, contextlib, json, os, subprocess, sys, threading, time, webbrowser
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from . import __version__
 from .config import Config
+
+class _LocalRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Management requests must stay on the configured loopback service.
+        return None
+
+_local_opener=build_opener(ProxyHandler({}),_LocalRedirectHandler())
 
 class InstanceLock:
     """OS lock; a stale PID file alone never authorizes killing another process."""
@@ -39,13 +47,27 @@ def api(config,path,body=None):
     request=Request(base_url(config)+path,data=json.dumps(body).encode() if body is not None else None,
       headers={'Authorization':'Bearer '+config.api_token,'Content-Type':'application/json'})
     # Full-database backups can exceed an interactive status request budget.
-    with urlopen(request,timeout=120 if path=='/v1/backup' else 10) as response:result=json.load(response)
+    with _local_opener.open(request,timeout=120 if path=='/v1/backup' else 10) as response:result=json.load(response)
     if not result.get('ok'):raise RuntimeError('服务拒绝操作')
     return result['data']
 
+def _start_ready(config):
+    try:
+        status=api(config,'/v1/status')
+    except Exception:
+        return False
+    if not isinstance(status,dict) or status.get('version')!=__version__:
+        raise RuntimeError(f'当前端口的服务版本与本次启动要求的 {__version__} 不一致，请先按维护说明停止旧服务')
+    return True
+
 def open_panel(config,app=None):
     ticket=app.issue_ticket() if app else api(config,'/v1/session/ticket',{})['ticket']
-    webbrowser.open(base_url(config)+'/brain#ticket='+ticket)
+    try:
+        opened=webbrowser.open(base_url(config)+'/brain#ticket='+ticket)
+    except Exception:
+        opened=False
+    if not opened:
+        raise RuntimeError('未能打开默认浏览器，请检查系统的默认浏览器设置')
     return base_url(config)+'/brain'
 
 def main(argv=None):
@@ -72,19 +94,24 @@ def main(argv=None):
             print('独立配置已创建：'+str(Path(args.config).resolve()));print('管理口令保存在本机配置中，不会输出。');return 0
         config=Config.load(args.config)
         if args.command=='start':
-            try:api(config,'/v1/status');running=True
-            except Exception:running=False
+            running=_start_ready(config)
             if not running:
                 logdir=Path(config.data_dir)/'logs';logdir.mkdir(parents=True,exist_ok=True)
                 flags=(subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP) if os.name=='nt' else 0
+                interpreter=[sys.executable]
+                if sys.flags.isolated:
+                    interpreter.append('-I')
                 with (logdir/'service.log').open('ab') as logfile:
-                    process=subprocess.Popen([sys.executable,'-m','xiaojiu_brain','--config',str(Path(args.config).resolve()),'serve'],
+                    process=subprocess.Popen([*interpreter,'-X','utf8','-m','xiaojiu_brain',
+                      '--config',str(Path(args.config).resolve()),'serve'],
                       stdin=subprocess.DEVNULL,stdout=logfile,stderr=logfile,creationflags=flags,start_new_session=os.name!='nt')
                 for _ in range(50):
-                    try:api(config,'/v1/status');running=True;break
-                    except Exception:
-                        if process.poll() is not None:break
-                        time.sleep(.2)
+                    if _start_ready(config):
+                        running=True
+                        break
+                    if process.poll() is not None:
+                        break
+                    time.sleep(.2)
                 if not running:raise RuntimeError('新服务未就绪，请查看该数据目录 logs/service.log；未停止其它服务')
             if args.open_panel:open_panel(config)
             print('忆核大脑已就绪：'+base_url(config)+'/brain');return 0
@@ -110,7 +137,10 @@ def main(argv=None):
                 try:
                     server=BrainServer((config.host,config.port),app)
                     if args.open_panel:
-                        timer=threading.Timer(.35,lambda:open_panel(config,app));timer.daemon=True;timer.start()
+                        def show_panel():
+                            try:open_panel(config,app)
+                            except RuntimeError as exc:print(str(exc),file=sys.stderr,flush=True)
+                        timer=threading.Timer(.35,show_panel);timer.daemon=True;timer.start()
                     print('忆核大脑已启动：'+base_url(config)+'/brain',flush=True)
                     print('数据目录：'+str(Path(config.data_dir).resolve()),flush=True)
                     server.serve_forever(poll_interval=.2)

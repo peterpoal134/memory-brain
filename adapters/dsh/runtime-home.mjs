@@ -234,20 +234,23 @@ export function createRuntimeManager({packageRoot,home,execute=executeProcess}={
     try{return await operation();}
     finally{try{if(readJSON(lockFile).nonce===nonce)fs.unlinkSync(lockFile);}catch{}}
   }
-  async function freePort(){
+  async function freePort(host='127.0.0.1'){
     for(let port=18880;port<=18899;port++){
       const available=await new Promise(resolve=>{const server=net.createServer();server.once('error',()=>resolve(false));
-        server.listen({host:'127.0.0.1',port,exclusive:true},()=>server.close(()=>resolve(true)));});
+        server.listen({host,port,exclusive:true},()=>server.close(()=>resolve(true)));});
       if(available)return port;
     }throw safeError('no_free_local_kernel_port');
   }
   function wheel(){
     const directory=path.join(root,'wheels');if(!fs.existsSync(directory))return null;
     const names=fs.readdirSync(directory).filter(name=>/^xiaojiu_brain-.*\.whl$/.test(name));
-    if(names.length>1)throw safeError('ambiguous_kernel_wheel');
     if(!names.length)return null;
-    if(!names[0].startsWith('xiaojiu_brain-'+expectedVersion+'-'))throw safeError('kernel_wheel_version_mismatch');
-    return path.join(directory,names[0]);
+    const matching=names.filter(name=>name.startsWith('xiaojiu_brain-'+expectedVersion+'-'));
+    if(matching.length>1)throw safeError('ambiguous_kernel_wheel');
+    if(!matching.length)throw safeError('kernel_wheel_version_mismatch');
+    const selected=path.join(directory,matching[0]);
+    if(!fs.lstatSync(selected).isFile())throw safeError('kernel_wheel_invalid');
+    return selected;
   }
   function runtimeDependencies(){
     const file=path.join(root,'compat','runtime-dependencies.json'),directory=path.join(root,'wheels');
@@ -322,7 +325,8 @@ export function createRuntimeManager({packageRoot,home,execute=executeProcess}={
     }catch(caught){problem=typeof caught.code==='string'?caught.code:'runtime_status_unavailable';}
     const derived=disposed?'disposed':state==='initializing'?'initializing':problem?'error':
       running?'running':cfg&&installedVersion===expectedVersion?'ready':installedVersion&&installedVersion!==expectedVersion?'upgrade_required':'not_initialized';
-    return {state:derived,expected_version:expectedVersion,installed_version:installedVersion,
+    const prepared=Boolean(cfg&&installedVersion===expectedVersion&&!owned?.install_cleanup_pending&&problem!=='running_kernel_version_mismatch');
+    return {state:derived,expected_version:expectedVersion,installed_version:installedVersion,prepared,
       python:{available:Boolean(python),version:python?.version||null},
       models:{embedding_configured:Boolean(cfg?.embed_url&&cfg?.embed_model),derivation_configured:Boolean(cfg?.llm_url&&cfg?.llm_model),
         embed_key_saved:Boolean(fs.existsSync(secretsFile)&&owned?.secrets?.embed_key),llm_key_saved:Boolean(fs.existsSync(secretsFile)&&owned?.secrets?.llm_key)},
@@ -348,9 +352,10 @@ export function createRuntimeManager({packageRoot,home,execute=executeProcess}={
           if(version!==null)throw safeError('managed_kernel_upgrade_requires_maintenance');
           if(allowDownloads!==true)throw safeError('dependency_downloads_not_authorized');
           const dependencies=runtimeDependencies();
+          const packaged=wheel();
           const python=await probePython();if(!python)throw safeError('python_310_required');
           if(!fs.existsSync(pythonPath))await run(python.command,[...python.prefix,'-I','-m','venv',path.join(runtimeHome,'.venv')],{timeout:90000});
-          const packaged=wheel(),source=packaged?null:stageSource();let generated=null,installationError=null;
+          const source=packaged?null:stageSource();let generated=null,installationError=null;
           try{
             if(!packaged)generated=await sourceWheel(source);
             await run(pythonPath,['-I','-m','pip','install','--no-index','--find-links',dependencies,'--only-binary=:all:',
@@ -364,8 +369,12 @@ export function createRuntimeManager({packageRoot,home,execute=executeProcess}={
           }
           installedCache=null;if(await installed()!==expectedVersion)throw safeError('installed_kernel_version_mismatch');
         }
-        if(!fs.existsSync(configFile))await run(pythonPath,['-I','-m','xiaojiu_brain','--config',configFile,'init',
-          '--data-dir',path.join(runtimeHome,'data'),'--port',String(await freePort()),'--owner',OWNER],{timeout:15000});
+        if(!fs.existsSync(configFile)){
+          owned.port_pending_first_start=true;
+          writeAtomic(markerFile,owned);
+          await run(pythonPath,['-I','-m','xiaojiu_brain','--config',configFile,'init',
+            '--data-dir',path.join(runtimeHome,'data'),'--port',String(await freePort()),'--owner',OWNER],{timeout:15000});
+        }
         // CLI owns exclusive config creation. Only this manager's new/retrying
         // home receives the neutral environment names; no token/data is reset.
         const raw=readJSON(configFile);
@@ -388,15 +397,32 @@ export function createRuntimeManager({packageRoot,home,execute=executeProcess}={
     if(disposed)throw safeError('runtime_manager_disposed');
     return withLock(async()=>{
       try{
-        const cfg=config();if(await installed()!==expectedVersion)throw safeError('kernel_initialization_required');
+        let cfg=config();if(await installed()!==expectedVersion)throw safeError('kernel_initialization_required');
+        const owned=marker();
         const current=await http(cfg,'/v1/status');
-        if(current){if(current.version!==expectedVersion)throw safeError('running_kernel_version_mismatch');state='running';error=null;return await status();}
-        if(await portOpen(cfg))throw safeError('kernel_identity_not_confirmed');
-        const secrets=await loadSecrets();
+        if(current&&current.version!==expectedVersion)throw safeError('running_kernel_version_mismatch');
+        if(!current&&await portOpen(cfg)){
+          // Two prepared profiles can both pick the same unbound port. Only
+          // a fresh home with no launch history may choose another here.
+          if(owned.port_pending_first_start!==true||fs.existsSync(path.join(cfg.data_dir,'instance.lock')))
+            throw safeError('kernel_identity_not_confirmed');
+          const port=await freePort(cfg.host);
+          const raw=readJSON(configFile);
+          if(raw.port!==cfg.port||raw.host!==cfg.host)throw safeError('local_configuration_changed');
+          writeAtomic(configFile,{...raw,port});
+          cfg=config();
+        }
+        const secrets=current?{}:await loadSecrets();
+        if(owned.port_pending_first_start===true){
+          // Retire this eligibility before launch, even if startup times out.
+          delete owned.port_pending_first_start;
+          writeAtomic(markerFile,owned);
+        }
+        if(current){state='running';error=null;return await status();}
         await run(pythonPath,['-I','-m','xiaojiu_brain','--config',configFile,'start'],{timeout:30000,extraEnv:secrets});
         const ready=await http(cfg,'/v1/status',undefined,2000);
         if(ready?.version!==expectedVersion)throw safeError('owned_kernel_readiness_not_confirmed');
-        const owned=marker();owned.restart_required=false;writeAtomic(markerFile,owned);
+        owned.restart_required=false;writeAtomic(markerFile,owned);
         state='running';error=null;restartRequired=false;return await status();
       }catch(caught){error=typeof caught.code==='string'?caught.code:'owned_kernel_start_failed';throw safeError(error);}
     });

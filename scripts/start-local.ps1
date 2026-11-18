@@ -52,7 +52,7 @@ if (Test-Path -LiteralPath $hostSettings) {
 # Import from the installed wheel, not from a mutable source checkout.
 Push-Location (Split-Path -Parent $configPath)
 try {
-  $arguments = @('-X', 'utf8', '-m', 'xiaojiu_brain', '--config', $configPath, 'start')
+  $arguments = @('-I', '-X', 'utf8', '-m', 'xiaojiu_brain', '--config', $configPath, 'start')
   & $pythonPath @arguments
   if ($LASTEXITCODE -ne 0) { throw 'The local brain did not become ready. See its data/logs/service.log.' }
 } finally { Pop-Location }

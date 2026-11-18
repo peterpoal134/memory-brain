@@ -64,6 +64,13 @@ window.__ModuleLoader__.load({
         agent_inventory_unavailable: '当前宿主无法确认对话是否空闲，暂不重启内核。',
         managed_kernel_upgrade_requires_maintenance: '检测到已有旧版内核，已保留环境和记忆。本页暂不执行跨版本升级，请按安装文档的维护步骤处理。',
         kernel_running_upgrade_requires_stop: '已有内核正在运行，准备操作已暂停，原环境和数据保持不变。',
+        running_kernel_version_mismatch: '运行中的内核版本与插件预期不一致，请按安装文档的升级步骤处理。',
+        ambiguous_kernel_wheel: '安装包含有多份匹配当前版本的内核文件，请重新获取完整发行包。',
+        kernel_wheel_version_mismatch: '安装包缺少与当前插件版本匹配的内核文件，请重新获取完整发行包。',
+        kernel_wheel_invalid: '内核文件类型异常，请重新获取完整发行包。',
+        no_free_local_kernel_port: '忆核的本机端口范围已占满，请核对已有实例后重试。',
+        kernel_identity_not_confirmed: '配置端口已被占用，尚未确认它属于这个忆核实例。请核对占用端口的应用后重试。',
+        archive_only_session_contract_required: '当前 DSH 未提供已核验的会话事件与日志读取能力，暂未开始归档。',
         runtime_not_initialized: '请先完成第一步“准备环境”。',
         kernel_initialization_required: '请先完成运行环境准备，再启用。',
         setup_busy: '另一项操作仍在进行，请等待状态更新后重试。',
@@ -143,6 +150,7 @@ window.__ModuleLoader__.load({
       const digest = value => typeof value === 'string' && /^[a-fA-F0-9]{64}$/.test(value) ? value : null;
       const reasons = ['runtime_unavailable', 'asar_runtime_unavailable', 'runtime_access_denied', 'required_modules_missing',
         'required_modules_unreadable', 'loop_source_invalid_utf8', 'node_22_or_later_required', 'native_request_messages_markers',
+        'verified_native_snapshot', 'verified_syntax_equivalent',
         'verified_stock_source', 'verified_stock_source_formatting', 'unknown_loop_fingerprint', 'host_module_identity_mismatch',
         'dsh_runtime_not_resolved', 'host_build_unverified'];
       const errorCodes = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EISDIR', 'EINVAL', 'ELOOP', 'ENAMETOOLONG', 'EIO',
@@ -245,8 +253,9 @@ window.__ModuleLoader__.load({
       const operation = status?.operation;
       const working = Boolean(pending || status?.busy);
       const pythonMissing = runtime.python?.available === false;
-      const prepared = runtime.state === 'ready' || Boolean(runtime.installed_version);
+      const prepared = runtime.prepared ?? (runtime.state === 'ready' || Boolean(runtime.installed_version));
       const active = status?.adapter?.enabled === true;
+      const archiveOnly = status?.archive_only === true;
       const contextPolicy = status?.context;
       const contextObserved = status?.adapter?.context_management || {};
       const compression = contextObserved.compression || {};
@@ -255,12 +264,16 @@ window.__ModuleLoader__.load({
       const history = status?.adapter?.session_history || {};
       const restartRequired = runtime.restart_required === true || contextPolicy?.restart_required === true;
       const operationText = typeof operation === 'string' ? ({ initialize: '正在准备运行环境与依赖…', models: '正在保存本机模型配置…', context: '正在保存上下文设置…', start: '正在连接并检查记忆插件…' }[operation] || operation) : message(operation, '');
-      const phaseText = active ? '已接入 DSH' : runtime.running ? '内核已启动，等待接入 DSH' : prepared ? '环境已准备，等待启用' : '等待首次准备';
+      const versionMismatch = runtime.expected_version && runtime.installed_version && runtime.expected_version !== runtime.installed_version
+        || runtime.error === 'running_kernel_version_mismatch';
+      const phaseText = active ? (archiveOnly ? '仅归档已启用' : '已接入 DSH') : versionMismatch ? '需要维护以匹配内核版本' :
+        runtime.running ? '内核已启动，等待接入 DSH' : prepared ? '环境已准备，等待启用' :
+          runtime.installed_version ? '等待完成环境准备' : '等待首次准备';
       const legacy = status?.legacy === true;
-      const readOnlyDiagnostic = diagnosticOnly(status?.compatibility);
+      const readOnlyDiagnostic = !archiveOnly && diagnosticOnly(status?.compatibility);
 
       async function perform(action, body, success) {
-        if (diagnosticOnly(statusRef.current?.compatibility)) {
+        if (statusRef.current?.archive_only !== true && diagnosticOnly(statusRef.current?.compatibility)) {
           setError(compatibilityMessage(statusRef.current?.compatibility));
           return;
         }
@@ -356,7 +369,7 @@ window.__ModuleLoader__.load({
       }
 
       async function openPanel() {
-        if (diagnosticOnly(statusRef.current?.compatibility)) return;
+        if (statusRef.current?.archive_only !== true && diagnosticOnly(statusRef.current?.compatibility)) return;
         if (pendingRef.current || statusRef.current?.busy) return;
         setPanelLink('');
         // Reserve a user-initiated window before the asynchronous ticket request.
@@ -405,7 +418,7 @@ window.__ModuleLoader__.load({
       }
       return h('div', { style: styles.root },
         h('h2', { style: { ...styles.heading, fontSize: 21 } }, '忆核大脑 · 首次设置'),
-        h('p', { style: styles.muted }, '在这里准备独立内核、选择模型并接入 DSH。准备完成前，插件尚未开始保存或召回你的对话。'),
+        h('p', { style: styles.muted }, archiveOnly ? '仅归档模式。启用后保存此后正式提交的原话，可在面板手动查找。对话内自动召回、注入和上下文整理均关闭。' : '在这里准备独立内核、选择模型并接入 DSH。准备完成前，插件尚未开始保存或召回你的对话。'),
         h('div', { style: styles.row },
           h('strong', null, status ? phaseText : '正在检查本机环境…'),
           button('重新检查', refresh, { disabled: pending, primary: false })),
@@ -446,7 +459,7 @@ window.__ModuleLoader__.load({
             h('div', { style: styles.row },
               h('button', { type: 'submit', disabled: working || !status || !prepared, style: { ...styles.button, opacity: working || !status || !prepared ? 0.5 : 1 } }, '保存填写的配置'),
               button('暂时跳过模型配置', () => setNotice('可以先启用基础原话和词法检索，之后再回这里配置模型。'))))),
-        h('section', { style: styles.section },
+        !archiveOnly ? h('section', { style: styles.section },
           h('h3', { style: styles.heading }, '3 · 上下文管理'),
           h('p', { style: styles.muted }, '默认累计 12 轮真实用户对话后尝试整理较早历史，保留最近 4 个完整回合。原话归档确认后才压缩，失败时保留原历史。'),
           h('p', { style: styles.muted }, '自带简洁中文摘要、压力整理冷却与工具结果裁剪，已有自定义宿主策略优先保留。摘要可能额外调用模型并计费；能力以实际状态为准。'),
@@ -473,14 +486,14 @@ window.__ModuleLoader__.load({
               Object.entries(contextFlags).map(([key, label]) => contextToggle(label, key)),
               h('p', { style: styles.muted }, '短摘要字数是模型目标，不能保证精确。工具裁剪使用原生机制并保留原日志；历史回查遵守接收范围、删除与披露设置。已有宿主自定义策略可能继续使用其自身参数。'),
               h('div', { style: styles.row }, contextNumbers.map(([key, label, min, max]) => contextInput(label, key, min, max)))),
-            h('button', { type: 'submit', disabled: working || !status, style: { ...styles.button, opacity: working || !status ? 0.5 : 1 } }, '保存上下文设置'))),
+            h('button', { type: 'submit', disabled: working || !status, style: { ...styles.button, opacity: working || !status ? 0.5 : 1 } }, '保存上下文设置'))) : null,
         h('section', { style: styles.section },
-          h('h3', { style: styles.heading }, '4 · 启用并打开面板'),
-          h('p', { style: styles.muted }, active ? 'DSH 接入已启用。面板可查看实际入库、索引和后台任务状态；这不代表历史对话已经自动迁入。' : '准备完成后启用。只有状态确认接入 DSH 后，才开始按当前设置处理新对话。'),
+          h('h3', { style: styles.heading }, archiveOnly ? '3 · 启用归档并打开面板' : '4 · 启用并打开面板'),
+          h('p', { style: styles.muted }, archiveOnly ? (active ? '请发一条新消息，再到面板确认原话入库。' : '准备完成后，点击启用归档。') : active ? 'DSH 接入已启用。面板可查看实际入库、索引和后台任务状态；这不代表历史对话已经自动迁入。' : '准备完成后启用。只有状态确认接入 DSH 后，才开始按当前设置处理新对话。'),
           runtime.restart_required ? h('p', { style: styles.notice }, '新模型配置尚未生效。请先结束当前对话，再点击“应用配置并重新连接”；只重启本插件自己的内核，不重启 DSH。') : null,
           contextPolicy?.restart_required && !runtime.restart_required ? h('p', { style: styles.notice }, '新的上下文设置尚未应用。请先结束当前对话，再点击“应用配置并重新连接”；本次只重新连接记忆插件。') : null,
           h('div', { style: styles.row },
-            button(restartRequired ? '应用配置并重新连接' : active ? '检查并启用' : '启用忆核大脑', () => perform('start', {}, '启用任务已提交，正在检查实际接入状态。'), { primary: true, disabled: working || !status || !prepared }),
+            button(restartRequired ? '应用配置并重新连接' : archiveOnly ? '启用归档' : active ? '检查并启用' : '启用忆核大脑', () => perform('start', {}, '启用任务已提交，正在检查实际接入状态。'), { primary: true, disabled: working || !status || !prepared }),
             button('打开 3D 大脑与控制面板', openPanel, { disabled: working || !status || runtime.running !== true })),
           panelLink ? h('p', null, h('a', { href: panelLink, target: '_blank', rel: 'noopener noreferrer', onClick: () => setTimeout(() => setPanelLink(''), 0) }, '浏览器阻止了弹窗，点击这里打开本机面板')) : null,
           status?.compatibility?.error ? h('p', { role: 'alert', style: styles.error }, message(status.compatibility.error, '当前 DSH 构建尚未通过兼容检查，暂未启用。')) : null));

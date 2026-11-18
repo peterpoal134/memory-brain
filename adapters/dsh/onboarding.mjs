@@ -31,6 +31,7 @@ async function readBody(request){
 function publicRuntime(value={}){
   const text=value=>typeof value==='string'?value.slice(0,100):null;
   return {state:text(value.state),expected_version:text(value.expected_version),installed_version:text(value.installed_version),
+    ...(typeof value.prepared==='boolean'?{prepared:value.prepared}:{}),
     python:{available:value.python?.available===true,version:text(value.python?.version)},
     models:{embedding_configured:value.models?.embedding_configured===true,derivation_configured:value.models?.derivation_configured===true,
       embed_key_saved:value.models?.embed_key_saved===true,llm_key_saved:value.models?.llm_key_saved===true},
@@ -73,9 +74,9 @@ function publicSessionHistory(value){
   for(const key of ['searches','automatic_checks','matches','failures'])if(Number.isFinite(value[key])&&value[key]>=0)result[key]=value[key];
   return result;
 }
-export function createOnboarding({manager,onStart,home='',compatibility='',legacy=false,getAdapterStatus,getContextSettings,saveContextSettings}={}){
+export function createOnboarding({manager,onStart,home='',compatibility='',archiveOnly=false,legacy=false,getAdapterStatus,getContextSettings,saveContextSettings}={}){
   const csrfToken=crypto.randomBytes(32).toString('base64url');
-  const diagnosticOnly=compatibility?.supported===false;
+  const diagnosticOnly=compatibility?.supported===false&&!archiveOnly;
   let disposed=false,busy=false,operation=null,lastError=null,connected=false,task=null;
   async function status(){
     let runtime;try{runtime=publicRuntime(await manager.status());}catch(error){runtime=publicRuntime({state:'error',error:failure(error)});}
@@ -97,8 +98,9 @@ export function createOnboarding({manager,onStart,home='',compatibility='',legac
       }catch(error){lastError=failure(error);}
       try{contextManagement=publicContextManagement(adapterSnapshot?.context_management);}catch{/* optional observed capability */}
     }
-    return {phase:disposed?'closed':diagnosticOnly?'compatibility_required':busy?'working':enabled?'connected':runtime.installed_version?'ready':'not_initialized',
-      operation,busy,error:lastError||runtime.error,csrfToken,runtime,home,compatibility,legacy,
+    const prepared=runtime.prepared??Boolean(runtime.installed_version);
+    return {phase:disposed?'closed':diagnosticOnly?'compatibility_required':busy?'working':enabled?(archiveOnly?'archive_only':'connected'):prepared?'ready':'not_initialized',
+      operation,busy,error:lastError||runtime.error,csrfToken,runtime,home,compatibility,legacy,...(archiveOnly?{archive_only:true}:{}),
       context,adapter:{enabled,capture,context_management:contextManagement,session_history:diagnosticOnly?null:publicSessionHistory(adapterSnapshot?.session_history)}};
   }
   function enqueue(name,action){

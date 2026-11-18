@@ -10,6 +10,8 @@ Python/tzdata、DSH 宿主和模型服务各自遵循其许可。本发布不打
 
 为避免首次安装依赖网络，公开包包含未修改的 `tzdata-2026.6-py2.py3-none-any.whl`（Python Software Foundation，Apache-2.0）。官方发布地址及 SHA-256 在 `compat/runtime-dependencies.json`；完整版权和许可随 wheel 内的 `dist-info/licenses/` 保留。该时区数据用于 Windows 的 IANA 时区支持，不是用户记忆。没有改写或重新打包该第三方 wheel。当前内核没有使用 NumPy，a17移除了此前遗留的 NumPy 强制依赖。
 
+DSH 兼容检查随包分发 [Acorn 8.15.0](https://www.npmjs.com/package/acorn/v/8.15.0) 的 ESM 构建，遵循 MIT 许可。完整许可见 [ACORN-LICENSE.md](adapters/dsh/vendor/ACORN-LICENSE.md)。
+
 ## 3D 大脑与前端资源
 
 3D 首页沿用既有全息脑形实现，保留金紫双半球、皮层网格、表面光纤和青色舞台；新增功能区导航只表示架构，不表示真实神经活动或逐条记忆的解剖位置。

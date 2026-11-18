@@ -1,4 +1,5 @@
 @echo off
+setlocal
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
   echo Please run the installer first.
@@ -6,4 +7,6 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0scripts\open-panel.ps1"
+set "result=%errorlevel%"
 if errorlevel 1 pause
+exit /b %result%

@@ -27,14 +27,13 @@ class BrainServer(ThreadingHTTPServer):
     def process_request(self,request,client_address):
         if not self._request_slots.acquire(blocking=False):
             try:
-                request.settimeout(.1)
-                request.sendall(b'HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\nRetry-After: 1\r\n\r\n')
-                request.shutdown(socket.SHUT_WR)
-                # A tiny bounded drain prevents an unread normal request from
-                # turning the already sent 503 into a Windows TCP reset.
+                # Give a normal local request a short chance to arrive before
+                # closing the write side, which can abort a concurrent Windows send.
                 request.settimeout(.02)
                 try:request.recv(8192)
                 except OSError:pass
+                request.settimeout(.1)
+                request.sendall(b'HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\nRetry-After: 1\r\n\r\n')
             except OSError:pass
             finally:self.shutdown_request(request)
             return

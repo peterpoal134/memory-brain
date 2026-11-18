@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {discoverHostRuntime} from '../adapters/dsh/runtime-discovery.mjs';
@@ -12,13 +13,23 @@ import {probeRuntime} from '../adapters/dsh/host-compat.mjs';
 
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'memory-brain-discovery-private-fixture-'));
 const names=['dsh-agent-loop','dsh-session','dsh-llm','dsh-tools'];
-const nativeSource='throw new Error("SYNTHETIC_MODULE_CODE_MUST_NOT_EXECUTE");\n'+
-  'class SnapshotFixture {withRequestMessages(messages){return messages;} step(decision){return this.withRequestMessages(decision.requestMessages);}}\n';
+const vettedSource='throw new Error("SYNTHETIC_MODULE_CODE_MUST_NOT_EXECUTE");\nexport const sourceLabel="vetted_fixture";\n';
 const unknownSource='throw new Error("SYNTHETIC_MODULE_CODE_MUST_NOT_EXECUTE");\nexport const sourceLabel="unknown_loop";\n';
+const fixtureHash=createHash('sha256').update(vettedSource).digest('hex');
+function vettedProbe(root){
+  // Discovery tests admit only their exact inert positive fixture, after the
+  // real probe confirms the entire required package set is readable.
+  const result=probeRuntime(root);
+  if(result.compatibility.reason==='unknown_loop_fingerprint'&&result.compatibility.loop_sha256===fixtureHash){
+    result.supported=true;result.injectionMode='scoped_agent_bridge';
+    Object.assign(result.compatibility,{supported:true,mode:result.injectionMode,reason:'verified_test_fixture'});
+  }
+  return result;
+}
 const checks=[];
 const check=(name,run)=>checks.push({name,run});
 let fixtureNumber=0;
-function packageAt(directory,name,source=nativeSource){
+function packageAt(directory,name,source=vettedSource){
   fs.mkdirSync(path.join(directory,'lib'),{recursive:true});
   fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify({name:'@deepseek-ai/'+name,
     version:'0.2.2-rc.3',type:'module',exports:'./lib/index.js',main:'./lib/index.js',
@@ -32,7 +43,7 @@ function linkDirectory(target,link){
 }
 const moduleDirectory=(root,name)=>path.join(root,'node_modules','@deepseek-ai',name);
 const moduleFile=(root,name)=>path.join(moduleDirectory(root,name),'lib/index.js');
-function fixture({split=true,source=nativeSource}={}){
+function fixture({split=true,source=vettedSource}={}){
   const directory=path.join(temporary,'fixture-'+ ++fixtureNumber),host=path.join(directory,'host');
   const store=path.join(directory,'store','loop-container');
   const actualLoop=moduleDirectory(split?store:host,'dsh-agent-loop');
@@ -56,8 +67,8 @@ function fixture({split=true,source=nativeSource}={}){
   return {directory,host,store,actualLoop,helpers,entry,empty};
 }
 function options(value,overrides={}){
-  return {allowUnverified:true,probeRuntime,
-    inspectRuntime:root=>{const result=probeRuntime(root);if(!result.supported)throw new Error('fixture_host_not_verified');return result;},
+  return {allowUnverified:true,probeRuntime:vettedProbe,
+    inspectRuntime:root=>{const result=vettedProbe(root);if(!result.supported)throw new Error('fixture_host_not_verified');return result;},
     pluginUrl:pathToFileURL(path.join(value.empty,'plugin.mjs')).href,
     environment:{},argv:[process.execPath,value.entry],cwd:value.empty,
     resourcesPath:null,electronVersion:null,execPath:path.join(value.empty,'node'),...overrides};
@@ -109,12 +120,13 @@ check('fixed ascent reaches an incomplete root while the actual host root is com
   const value=fixture(),resolved=createRequire(value.entry).resolve('@deepseek-ai/dsh-agent-loop');
   const guessed=path.resolve(path.dirname(resolved),'../../../..');
   assert.equal(probeRuntime(guessed).compatibility.reason,'required_modules_missing');
-  assert.equal(probeRuntime(value.host).supported,true);
+  assert.equal(probeRuntime(value.host).supported,false);
+  assert.equal(vettedProbe(value.host).supported,true);
 });
 check('split package discovery continues past the incomplete root and admits the same host',()=>{
   const value=fixture(),result=discover(value);
   assert.equal(result.supported,true);assert.ok(sameFile(result.runtime,value.host));
-  assert.equal(result.compatibility.reason,'native_request_messages_markers');
+  assert.equal(result.compatibility.reason,'verified_test_fixture');
 });
 check('strict activation also continues past the incomplete inferred root',()=>{
   const value=fixture(),result=discover(value,{allowUnverified:false});
@@ -124,7 +136,7 @@ check('a complete guessed store with different sibling helpers cannot hide the a
   const value=fixture();
   for(const name of names.slice(1))packageAt(moduleDirectory(value.store,name),name,
     'throw new Error("UNRELATED_STORE_SIBLING_MUST_NOT_EXECUTE");\n');
-  assert.equal(probeRuntime(value.store).supported,true,'fixture store is complete but not the anchor module set');
+  assert.equal(vettedProbe(value.store).supported,true,'fixture store is complete but not the anchor module set');
   for(const allowUnverified of [true,false]){
     const result=discover(value,{allowUnverified});
     assert.equal(result.supported,true);assert.ok(sameFile(result.runtime,value.host));

@@ -136,6 +136,59 @@ class StorageStability(unittest.TestCase):
         with closing(sqlite3.connect(destination)) as check:
             self.assertEqual(check.execute('PRAGMA integrity_check').fetchone()[0],'ok')
 
+    def test_existing_job_queue_reopens_with_index_and_preserves_policy_and_leases(self):
+        self.store.conn.execute('DROP INDEX IF EXISTS ix_jobs_policy_lease')
+        held=self.ingest('held')
+        expired=self.ingest('expired')
+        sealed=self.store.ingest('owner','conversation','sealed','user','synthetic sealed',
+                                 metadata={'disclosure':'never_say'})
+        imported=self.store.ingest('owner','conversation','imported','user','synthetic import',
+                                   metadata={'import_model_policy':'local_only','skip_derivation':True})
+        for worker in ('held-worker','expired-worker'):
+            self.store.claim_derivation_jobs(limit=1,worker_id=worker,force=True)
+        self.store.conn.execute("UPDATE jobs SET lease_until=0 WHERE worker_id='expired-worker'")
+        before=self.store.conn.execute('SELECT * FROM jobs ORDER BY id').fetchall()
+        schema_version=self.store.conn.execute('PRAGMA user_version').fetchone()[0]
+
+        with closing(Store(self.store.path)) as reopened:
+            self.assertEqual(reopened.conn.execute('SELECT * FROM jobs ORDER BY id').fetchall(),before)
+            self.assertEqual(reopened.conn.execute('PRAGMA user_version').fetchone()[0],schema_version)
+            index=next((row for row in reopened.conn.execute('PRAGMA index_list(jobs)')
+                        if row['name']=='ix_jobs_policy_lease'),None)
+            self.assertIsNotNone(index)
+            self.assertEqual(index['partial'],1)
+
+            executed=[]
+            reopened.conn.set_trace_callback(executed.append)
+            try:
+                reopened.refresh_policy_jobs(import_embedding_is_remote=True)
+                embed_claims=reopened.claim_jobs('embed',limit=10,worker_id='embed-worker')
+                derive_claims=reopened.claim_derivation_jobs(limit=10,worker_id='derive-worker',force=True)
+            finally:
+                reopened.conn.set_trace_callback(None)
+            self.assertEqual([job['document_id'] for job in embed_claims],
+                             held['document_ids']+expired['document_ids'])
+            self.assertEqual([job['message_id'] for job in derive_claims],[expired['id']])
+            jobs=list(reopened.conn.execute('SELECT * FROM jobs'))
+            sealed_jobs=[job for job in jobs if job['message_id']==sealed['id']
+                         or job['document_id'] in sealed['document_ids']]
+            self.assertEqual([job['status'] for job in sealed_jobs],['blocked_policy','blocked_policy'])
+            hold=next(job for job in jobs if job['message_id']==held['id'])
+            self.assertEqual((hold['status'],hold['worker_id']),('running','held-worker'))
+
+            reopened.refresh_policy_jobs(import_embedding_is_remote=False)
+            local_claims=reopened.claim_jobs('embed',limit=10,worker_id='local-worker')
+            self.assertEqual([job['document_id'] for job in local_claims],imported['document_ids'])
+            self.assertEqual(reopened.conn.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+
+            updates=('blocked_policy','pending','retry')
+            for status in updates:
+                with self.subTest(status=status):
+                    sql=next(statement for statement in executed
+                             if statement.startswith(f"UPDATE jobs SET status='{status}'"))
+                    plan=[row[3] for row in reopened.conn.execute('EXPLAIN QUERY PLAN '+sql)]
+                    self.assertTrue(any('SEARCH jobs USING INDEX ix_jobs_policy_lease' in row for row in plan),plan)
+
     def test_small_concurrent_writes_reads_and_backup_keep_originals_and_extensions_consistent(self):
         self.store.conn.executescript("CREATE TABLE synthetic_extension(value TEXT);INSERT INTO synthetic_extension VALUES('retained');")
         barrier=threading.Barrier(4)

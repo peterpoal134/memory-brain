@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { createAdapter, getAdapter } from './xiaojiu-brain.mjs';
+import { canUseArchiveSessionEvents, createAdapter, getAdapter } from './xiaojiu-brain.mjs';
 import { createRequestBridge, createNativeRequestBudgetBridge } from './request-bridge.mjs';
 import { createRequestBudget } from './request-budget.mjs';
 import { createContextSettings, CONTEXT_DEFAULTS } from './context-settings.mjs';
@@ -52,14 +52,15 @@ export function resolveConfiguration(config = {}) {
   const local = JSON.parse(fs.readFileSync(configFile, 'utf8').replace(/^\uFEFF/, ''));
   if (!['127.0.0.1', 'localhost', '::1'].includes(local.host) || !Number.isInteger(local.port) || local.port < 1024 || local.port > 65535) throw new Error('local_brain_address_invalid');
   if (typeof local.api_token !== 'string' || local.api_token.length < 24) throw new Error('local_brain_token_invalid');
-  const runtime = config.runtimePath ? inspectRuntime(config.runtimePath) : discoverRuntime();
+  const archiveOnly = config.archiveOnly === true;
+  const runtime = archiveOnly ? {} : config.runtimePath ? inspectRuntime(config.runtimePath) : discoverRuntime();
   const data = path.resolve(path.dirname(configFile), local.data_dir || './data');
   const namespace = config.queueNamespace || 'default';
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(namespace)) throw new Error('queue_namespace_invalid');
-  const contextPolicy=contextSettings(configFile,config),policy=contextPolicy.read();
-  const options = { ...config, ...policy, ...runtime, configFile, packageRoot, contextPolicySignature:contextPolicy.signature(policy),
+  const contextPolicy=archiveOnly?null:contextSettings(configFile,config),policy=contextPolicy?.read();
+  const options = { ...config, ...policy, ...runtime, archiveOnly, configFile, packageRoot, contextPolicySignature:contextPolicy?.signature(policy),
     baseUrl: `http://${local.host === '::1' ? '[::1]' : local.host}:${local.port}`, token: local.api_token,
-    queueDir: path.join(data, 'dsh-queue', namespace) };
+    queueDir: path.join(data, archiveOnly?'dsh-archive-queue':'dsh-queue', namespace) };
   delete options.runtime;
   return options;
 }
@@ -75,23 +76,34 @@ async function ready(options) {
   } catch { return false; }
 }
 
+async function confirmKernelReady(options,ensureReady,isDisposed) {
+  if (!await ready(options)) await ensureReady();
+  if (isDisposed()) throw new Error('setup_closed');
+  if (!await ready(options)) throw new Error('memory_brain_readiness_not_confirmed');
+}
+
 async function attach(ctx,options,ensureReady,isDisposed) {
+  if (options.archiveOnly) {
+    await confirmKernelReady(options,ensureReady,isDisposed);
+    const controller = await createAdapter(ctx, {...options, archiveCaptureAfter:Date.now()});
+    if (isDisposed()) { await controller.stop(); throw new Error('setup_closed'); }
+    if (!controller.enabled) throw new Error('archive_only_session_contract_required');
+    return controller;
+  }
   // The legacy bridge is per-agent, version/fingerprint gated and process local.
   // It never edits the host bundle, prototype or durable message history.
   const budget=createRequestBudget({enabled:options.contextEnabled!==false,maxInputTokens:options.contextMaxInputTokens,
     safetyTokens:options.contextSafetyTokens,onWarning:code=>ctx.logger?.warn?.('memory-brain: '+String(code).replace(/[^a-zA-Z0-9_:.-]/g,''))});
   options.requestBudget=budget;
   const llm=await import(options.llmModule);
-  const bridge = options.injectionMode === 'scoped_agent_bridge' ?
-    createRequestBridge({llm,sourceSha256:options.compatibility.loop_canonical_sha256,requestBudget:budget}) :
-    options.injectionMode==='native_snapshot'&&options.contextEnabled!==false?
-      createNativeRequestBudgetBridge({llm,sourceSha256:options.compatibility.loop_sha256,requestBudget:budget}):null;
+  const bridgeOptions={llm,sourceSha256:options.bridgeSourceSha256,
+    syntaxEquivalent:options.bridgeSyntaxEquivalent,requestBudget:budget};
+  const bridge = options.injectionMode === 'native_snapshot'
+    ? createNativeRequestBudgetBridge(bridgeOptions) : createRequestBridge(bridgeOptions);
   if (bridge) options.requestBridge = bridge;
   let support;
   try {
-  if (!await ready(options)) await ensureReady();
-  if (isDisposed()) throw new Error('setup_closed');
-  if (!await ready(options)) throw new Error('memory_brain_readiness_not_confirmed');
+  await confirmKernelReady(options,ensureReady,isDisposed);
   support = createCompactionSupport({ ctx, enabled: options.contextEnabled !== false,
     summaryEnabled: options.contextSummaryEnabled, summaryMaxChars: options.contextSummaryMaxChars,
     summaryMaxTokens: options.contextSummaryMaxTokens, pressureCooldownMs: options.contextPressureCooldownMs,
@@ -173,11 +185,12 @@ export async function apply(ctx,config={}){
   if(config.token!==undefined||config.baseUrl!==undefined)throw new Error('use_local_brain_config_instead_of_inline_token_or_url');
   if(config.queueNamespace!==undefined&&!/^[a-zA-Z0-9_-]{1,80}$/.test(config.queueNamespace))throw new Error('queue_namespace_invalid');
   const runtime=config.runtimePath?probeRuntime(config.runtimePath):discoverRuntime({allowUnverified:true});
+  const archiveOnly=config.archiveOnly===true&&(runtime.supported||runtime.compatibility.reason==='unknown_loop_fingerprint');
   let disposed=false,controller=null,activation=null,setup;
   const isDisposed=()=>disposed;
   const cleanup=async()=>{if(disposed)return;disposed=true;await setup?.dispose();};
   ctx.effect?.(()=>cleanup);
-  if(!runtime.supported){
+  if(!runtime.supported&&!archiveOnly){
     // Unknown packaged/mobile builds remain readable for diagnostics. No
     // configuration, Python installation, memory store or adapter is opened.
     const manager={async status(){return {state:'compatibility_required',models:{}};},async dispose(){}};
@@ -186,6 +199,10 @@ export async function apply(ctx,config={}){
     console.warn('memory-brain: compatibility_required '+JSON.stringify(runtime.compatibility));
     return;
   }
+  const compatibility=archiveOnly?{...runtime.compatibility,supported:false,mode:'archive_only'}:runtime.compatibility;
+  const checkArchiveContract=()=>{
+    if(archiveOnly&&!canUseArchiveSessionEvents(ctx))throw new Error('archive_only_session_contract_required');
+  };
   const legacy=config.brainConfigFile!==undefined||config.runtimeHome===undefined&&fs.existsSync(path.join(packageRoot,'private','config.json'));
   if(legacy){
     // An existing explicit/link install keeps its exact data, credentials and
@@ -194,8 +211,9 @@ export async function apply(ctx,config={}){
     const start=()=>{
       if(activation)return activation;
       activation=(async()=>{
+      checkArchiveContract();
       const latest=resolveConfiguration(config);
-      if(controller?.enabled&&controller.contextPolicySignature===latest.contextPolicySignature)return controller;
+      if(controller?.enabled&&(archiveOnly||controller.contextPolicySignature===latest.contextPolicySignature))return controller;
       if(controller?.enabled){
         if(runningAgent(ctx))throw new Error('finish_current_chat_before_applying_context');
         await controller.stop();controller=null;
@@ -213,10 +231,11 @@ export async function apply(ctx,config={}){
       return activation;
     };
     setup=createOnboarding({manager,onStart:start,home:path.dirname(path.dirname(options.configFile)),
-      compatibility:runtime.compatibility,legacy:true,getAdapterStatus:()=>controller,
-      getContextSettings:()=>({settings:policy.read(),restart_required:Boolean(controller?.enabled&&controller.contextPolicySignature!==policy.signature())}),
-      saveContextSettings:body=>policy.save(body)});
+      compatibility,archiveOnly,legacy:true,getAdapterStatus:()=>controller,
+      getContextSettings:archiveOnly?undefined:()=>({settings:policy.read(),restart_required:Boolean(controller?.enabled&&controller.contextPolicySignature!==policy.signature())}),
+      saveContextSettings:archiveOnly?undefined:body=>policy.save(body)});
     mountSetup(ctx,setup);
+    if(archiveOnly)return;
     // Keep this installation's setup scope alive after a temporary backend
     // outage. It owns neither the external kernel nor its startup contract.
     try { await start(); }
@@ -250,9 +269,10 @@ export async function apply(ctx,config={}){
   const start=()=>{
     if(activation)return activation;
     activation=(async()=>{
+      checkArchiveContract();
       const state=await manager.status();
       if(disposed)throw new Error('setup_closed');
-      const policyChanged=Boolean(controller?.enabled&&controller.contextPolicySignature!==policy.signature());
+      const policyChanged=!archiveOnly&&Boolean(controller?.enabled&&controller.contextPolicySignature!==policy.signature());
       if(controller?.enabled&&state.running&&!state.restart_required&&!policyChanged)return controller;
       if(policyChanged){
         if(runningAgent(ctx))throw new Error('finish_current_chat_before_applying_context');
@@ -272,12 +292,12 @@ export async function apply(ctx,config={}){
     })().then(value=>controller=value).finally(()=>activation=null);
     return activation;
   };
-  setup=createOnboarding({manager,onStart:start,home,compatibility:runtime.compatibility,getAdapterStatus:()=>controller,
-    getContextSettings:()=>({settings:policy.read(),restart_required:Boolean(controller?.enabled&&controller.contextPolicySignature!==policy.signature())}),
-    saveContextSettings:body=>{if(!fs.existsSync(path.join(home,'private','config.json')))throw new Error('runtime_not_initialized');return policy.save(body);}});
+  setup=createOnboarding({manager,onStart:start,home,compatibility,archiveOnly,getAdapterStatus:()=>controller,
+    getContextSettings:archiveOnly?undefined:()=>({settings:policy.read(),restart_required:Boolean(controller?.enabled&&controller.contextPolicySignature!==policy.signature())}),
+    saveContextSettings:archiveOnly?undefined:body=>{if(!fs.existsSync(path.join(home,'private','config.json')))throw new Error('runtime_not_initialized');return policy.save(body);}});
   mountSetup(ctx,setup);
   const state=await manager.status();
-  if(state.installed_version===state.expected_version&&state.state!=='error'&&config.autoStart!==false){
+  if(!archiveOnly&&state.installed_version===state.expected_version&&state.state!=='error'&&config.autoStart!==false){
     // No install/upgrade occurs here. Failed auto-start stays visible in the
     // setup card and can be retried explicitly, rather than losing the card.
     try{await start();}catch(error){setup.setError?.(error);}

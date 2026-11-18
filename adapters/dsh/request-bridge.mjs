@@ -1,11 +1,12 @@
-/** Restricted in-process compatibility for exact verified DSH source builds.
+/** Restricted in-process compatibility for reviewed DSH source builds.
  *
  * This is not an official requestMessages hook. The public entry must first
- * verify the selected complete source hash; both methods are fingerprinted
+ * match the complete source or its verified syntax; both methods are checked
  * here. No prototype, host file, ASAR, durable session or LLM route is patched.
  */
 import crypto from 'node:crypto';
 import { ContextBudgetError, CONTEXT_BUDGET_ERROR_CODE } from './request-budget.mjs';
+import { methodSyntaxFingerprint, syntaxFingerprint } from './host-source-fingerprint.mjs';
 
 export const STOCK_LOOP_SHA256='cf57e3ecd487ac5c2553455aaa5cef2c6fb41e6bd61be5aa455675d1d7193033';
 export const STOCK_METHOD_SHA256=Object.freeze({
@@ -46,9 +47,44 @@ export const NATIVE_METHOD_SHA256=Object.freeze({
 });
 const NATIVE_BUILD=Object.freeze({name:'verified_021_native_request_messages',methods:NATIVE_METHOD_SHA256});
 const VERIFIED_NATIVE_BUILDS=Object.freeze({[NATIVE_LOOP_SHA256]:NATIVE_BUILD,[NATIVE_CANONICAL_LOOP_SHA256]:NATIVE_BUILD});
-// Only line-ending representation is normalized. Spaces, comments and every
-// other method byte remain part of the exact verified-build fingerprint.
-const hash=fn=>crypto.createHash('sha256').update(Function.prototype.toString.call(fn).replace(/\r\n/g,'\n')).digest('hex');
+const hash=source=>crypto.createHash('sha256').update(source).digest('hex');
+const commonBuildRequestSyntax='702807ee9d3aca73a3f41bfeea0b968642da00d6d35682665cf8f09d04338d90';
+// These are full AST digests from the already admitted source files, paired
+// with AST digests derived from their exact audited method strings.
+const VERIFIED_SYNTAX=Object.freeze({
+  [STOCK_LOOP_SHA256]:{
+    source:'4d4b1e5fdaf5c64789d5330b93decd4cf40a76b5b0a4593c97adeadf4ed79b71',
+    methods:{step:'f65ee22293200e4a5aa2ef1a76c687261e3327cc82765a93984236c6311d56f3',buildRequest:commonBuildRequestSyntax},
+  },
+  a6fa8e0c7c90191caf5f4a3bb5c624a86e9845cf3c79d020b71420d0e20ae4c1:{
+    source:'c6dab4045e475abbe117c0e326db276c25e69fd6ecec6a24e88e9b678f1af3a1',
+    methods:{step:'478f242691fabf486479fb26195b3c9981f167db7cacfbc510df6566016f081b',buildRequest:commonBuildRequestSyntax},
+  },
+  f09f60814d4e96a880f41b9fc3832f33c56a28f954f48810d8439ce83ad6ffa8:{
+    source:'bcf85c47c4619bf6db16a075e24a48b639fc5b4c8862c148b13e58b2bd8d0087',
+    methods:{step:'3f97674d1e93013750dae754a13ecb9cddc3c36ce36c6c965d9ec2802664fc78',buildRequest:commonBuildRequestSyntax},
+  },
+  [NATIVE_LOOP_SHA256]:{
+    source:'9043b2856524e2410532c43d10a453dcfda6fdf3f2d86ad4a00732cacd5af62f',
+    methods:{step:'bece0433c067b5eeb20641a1b83d90a9b7703a8b8b2c1033e5e45c570cc5967d',buildRequest:commonBuildRequestSyntax,
+      withRequestMessages:'e5d0ed9fd5e16688b94cb16b5b77834331cfbb2cbf5a5fab01578b0bce09dab9'},
+  },
+});
+
+export function matchVerifiedLoop(source,raw=hash(source),canonical=source.replace(/^\uFEFF/,'').replace(/\r\n/g,'\n'),canonicalHash=hash(canonical)){
+  if(Object.hasOwn(VERIFIED_NATIVE_BUILDS,raw)||Object.hasOwn(VERIFIED_NATIVE_BUILDS,canonicalHash))
+    return {mode:'native_snapshot',sourceSha256:NATIVE_LOOP_SHA256,reason:'verified_native_snapshot'};
+  for(const [key,reason] of [[raw,'verified_stock_source'],[canonicalHash,'verified_stock_source_formatting']]){
+    if(Object.hasOwn(VERIFIED_LOOP_BUILDS,key))return {mode:'scoped_agent_bridge',sourceSha256:key,reason};
+  }
+  const syntax=syntaxFingerprint(canonical);
+  const reviewed=syntax&&Object.entries(VERIFIED_SYNTAX).find(([,build])=>build.source===syntax);
+  if(!reviewed)return null;
+  const [sourceSha256]=reviewed;
+  return {mode:sourceSha256===NATIVE_LOOP_SHA256?'native_snapshot':'scoped_agent_bridge',
+    sourceSha256,reason:'verified_syntax_equivalent',syntaxEquivalent:true};
+}
+
 const object=value=>value!==null&&(typeof value==='object'||typeof value==='function');
 const position=value=>value&&Number.isInteger(value.turn)&&value.turn>=0&&Number.isInteger(value.step)&&value.step>=0;
 function methodDescriptor(agent,name){
@@ -70,10 +106,11 @@ export function createRequestBridge(options={}){
 export function createNativeRequestBudgetBridge(options={}){
   return createBoundRequestBridge({...options,nativeBudget:true});
 }
-function createBoundRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256,requestBudget=null,nativeBudget=false}={}){
+function createBoundRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256,requestBudget=null,nativeBudget=false,syntaxEquivalent=false}={}){
   if(requestBudget!==null&&typeof requestBudget?.check!=='function')throw new TypeError('request_budget_helper_invalid');
   const builds=nativeBudget?VERIFIED_NATIVE_BUILDS:VERIFIED_LOOP_BUILDS;
   const build=Object.hasOwn(builds,sourceSha256)?builds[sourceSha256]:null;
+  const syntax=syntaxEquivalent?VERIFIED_SYNTAX[sourceSha256]?.methods:null;
   const records=new WeakMap(),agents=new Set();
   const create=llm?.createUserMessage,mark=llm?.markAgentLoopRequest,isBranded=llm?.isAgentLoopRequest;
   const hasBudget=Boolean(requestBudget)&&typeof requestBudget.check==='function';
@@ -118,7 +155,11 @@ function createBoundRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256,requestBud
     records.delete(agent);agents.delete(record.ref);
   }
   function ensure(agent){
-    let record=records.get(agent);if(record)return record;
+    let record=records.get(agent);
+    if(record){
+      if(methodNames.every(name=>ownsDescriptor(agent,name,record.installed[name])))return record;
+      restore(agent,record);report('agent_methods_replaced');return null;
+    }
     if(!object(agent)){report('agent_missing');return null;}
     const native=methodDescriptor(agent,'withRequestMessages');
     if(!nativeBudget&&native&&typeof native.value==='function'){report('native_snapshot_present');return null;}
@@ -126,7 +167,10 @@ function createBoundRequestBridge({llm,sourceSha256=STOCK_LOOP_SHA256,requestBud
     const original={},originalOwn={},installed={};
     for(const name of methodNames){
       const descriptor=methodDescriptor(agent,name),own=Object.getOwnPropertyDescriptor(agent,name);
-      if(!descriptor||!('value'in descriptor)||typeof descriptor.value!=='function'||hash(descriptor.value)!==build.methods[name]){
+      const method=descriptor&&'value'in descriptor&&typeof descriptor.value==='function'?
+        Function.prototype.toString.call(descriptor.value).replace(/\r\n/g,'\n'):null;
+      if(!method||(hash(method)!==build.methods[name]&&
+        (!syntax?.[name]||methodSyntaxFingerprint(method)!==syntax[name]))){
         report('unknown_'+name+'_method');return null;
       }
       if(own&&(!('value'in own)||(!own.configurable&&!own.writable))||!own&&!Object.isExtensible(agent)){

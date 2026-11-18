@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {discoverHostRuntime} from '../adapters/dsh/runtime-discovery.mjs';
@@ -10,8 +11,19 @@ import {probeRuntime} from '../adapters/dsh/host-compat.mjs';
 
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'memory-brain-identity-fixture-'));
 const names=['dsh-agent-loop','dsh-session','dsh-llm','dsh-tools'];
-const native='throw Error("FIXTURE_MUST_NOT_EXECUTE");class Fixture{withRequestMessages(){}step(decision){return this.withRequestMessages(decision.requestMessages);}}\n';
+const vetted='throw Error("FIXTURE_MUST_NOT_EXECUTE");export const vettedFixture=true;\n';
 const unknown='throw Error("FIXTURE_MUST_NOT_EXECUTE");export const unsupported=true;\n';
+const fixtureHash=createHash('sha256').update(vetted).digest('hex');
+function vettedProbe(root){
+  // A test-only gate for the inert positive fixture. Keep all real filesystem
+  // read failures and all other host admission decisions intact.
+  const result=probeRuntime(root);
+  if(result.compatibility.reason==='unknown_loop_fingerprint'&&result.compatibility.loop_sha256===fixtureHash){
+    result.supported=true;result.injectionMode='scoped_agent_bridge';
+    Object.assign(result.compatibility,{supported:true,mode:result.injectionMode,reason:'verified_test_fixture'});
+  }
+  return result;
+}
 let serial=0;
 const moduleDirectory=(root,name)=>path.join(root,'node_modules','@deepseek-ai',name);
 const moduleFile=(root,name)=>path.join(moduleDirectory(root,name),'lib/index.js');
@@ -22,7 +34,7 @@ function packageAt(directory,name,code){
 }
 function link(target,directory){fs.mkdirSync(path.dirname(directory),{recursive:true});fs.symlinkSync(target,directory,process.platform==='win32'?'junction':'dir');}
 function unlink(directory){if(process.platform==='win32')fs.rmdirSync(directory);else fs.unlinkSync(directory);}
-function fixture({split=true,source=native}={}){
+function fixture({split=true,source=vetted}={}){
   const directory=path.join(temporary,'case-'+ ++serial),host=path.join(directory,'host'),store=path.join(directory,'store'),helpers={};
   const loopPackage=moduleDirectory(split?store:host,'dsh-agent-loop');
   packageAt(loopPackage,'dsh-agent-loop',source);if(split)link(loopPackage,moduleDirectory(host,'dsh-agent-loop'));
@@ -35,7 +47,7 @@ function fixture({split=true,source=native}={}){
   return {directory,host,store,loopPackage,helpers,entry,empty};
 }
 function options(value,overrides={}){
-  return {allowUnverified:true,probeRuntime,inspectRuntime:root=>{const result=probeRuntime(root);if(!result.supported)throw Error('unverified_host');return result;},
+  return {allowUnverified:true,probeRuntime:vettedProbe,inspectRuntime:root=>{const result=vettedProbe(root);if(!result.supported)throw Error('unverified_host');return result;},
     environment:{},argv:[process.execPath,value.entry],pluginUrl:pathToFileURL(path.join(value.empty,'plugin.mjs')).href,
     cwd:value.empty,resourcesPath:null,electronVersion:null,execPath:path.join(value.empty,'node'),...overrides};
 }

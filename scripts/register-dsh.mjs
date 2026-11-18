@@ -5,6 +5,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {probeRuntime} from '../adapters/dsh/host-compat.mjs';
+import {matchVerifiedLoop} from '../adapters/dsh/request-bridge.mjs';
 
 const SCRIPT_ROOT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const ENTRY_ID='memory-brain';
@@ -15,7 +17,7 @@ const MESSAGES={invalid_arguments:'Use absolute --runtime and --profile-patch pa
   symlink_refused:'A selected path or its existing parent is a symbolic link; no files were changed.',
   invalid_profile_path:'The profile patch must be a .yml or .yaml file in an existing directory.',
   runtime_unavailable:'The selected DSH installation or required local modules are unavailable.',
-  request_hook_missing:'This DSH runtime does not consume requestMessages. Registration was refused; the runtime was not patched.',
+  request_hook_missing:'This DSH runtime has no verified request injection path. Registration was refused; the runtime was not patched.',
   package_entry_missing:'The public memory-brain plugin entry is missing from this package.',
   profile_parse_failed:'The profile is not a supported Cordis YAML patch sequence; no files were changed.',
   profile_ambiguous:'The profile has duplicate or overridden memory-brain records; resolve them before registration.',
@@ -48,8 +50,7 @@ export function assertNoSymlink(filename){
 }
 
 export function supportsRequestMessages(source){
-  return typeof source==='string'&&/\bwithRequestMessages\s*\(/.test(source)&&
-    /this\.withRequestMessages\s*\(/.test(source)&&/decision\.requestMessages\b/.test(source);
+  return typeof source==='string'&&matchVerifiedLoop(source)?.mode==='native_snapshot';
 }
 
 function parseArgs(argv){
@@ -287,11 +288,10 @@ export async function registerDSH(options){
   const patch=path.resolve(profilePatch),entry=path.join(root,'adapters','dsh','memory-brain.mjs');
   const brainConfigFile=path.join(root,'private','config.json');
   const deps=await dependencies(selectedRuntime);
-  const loop=path.join(selectedRuntime,'node_modules','@deepseek-ai','dsh-agent-loop','lib','index.js');
-  let requestHook=false;
-  try{requestHook=supportsRequestMessages(fs.readFileSync(loop,'utf8'));}catch{}
+  const verified=options.remove?null:probeRuntime(selectedRuntime);
+  const requestHook=verified?.injectionMode==='native_snapshot';
   if(!options.remove){
-    if(!requestHook)fail('request_hook_missing');
+    if(!verified.supported)fail('request_hook_missing');
     assertNoSymlink(entry);
     if(!exists(entry)||!fs.lstatSync(entry).isFile())fail('package_entry_missing');
     if(options.apply)validateLocalConfig(brainConfigFile);

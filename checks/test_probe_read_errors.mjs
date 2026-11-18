@@ -35,8 +35,9 @@ function probe({root=normalRoot,realpathError=null,statError=null,directory=true
   }finally{Object.assign(fs,original);}
 }
 const tests=[];const test=(name,run)=>tests.push({name,run});
-test('complete readable fixture has no read errors and preserves native compatibility',()=>{
-  const result=probe();assert.equal(result.supported,true);assert.deepEqual(result.compatibility.read_errors,[]);
+test('complete readable fixture has no read errors and remains unverified',()=>{
+  const result=probe();assert.equal(result.supported,false);assert.deepEqual(result.compatibility.read_errors,[]);
+  assert.equal(result.compatibility.reason,'unknown_loop_fingerprint');
 });
 for(const code of ['EACCES','EPERM']){
   test(code+' at runtime realpath is a permission refusal with no path or exception text',()=>{
@@ -87,7 +88,8 @@ test('I/O and resource read failures are unreadable rather than falsely missing 
 });
 test('optional module failures do not invent missing required dependencies',()=>{
   const result=probe({readErrors:{connection:'EACCES',compaction:'ENOENT',cordis:'EPERM'}});
-  assert.equal(result.supported,true);assert.deepEqual(result.compatibility.read_errors,[]);
+  assert.equal(result.supported,false);assert.deepEqual(result.compatibility.read_errors,[]);
+  assert.equal(result.compatibility.reason,'unknown_loop_fingerprint');
   assert.equal(result.compatibility.modules.connection.sha256,null);
 });
 test('invalid UTF-8 still fails its original compatibility gate',()=>{
