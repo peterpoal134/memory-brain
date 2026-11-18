@@ -9,6 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { BoundedDurableIndex, forEachJsonLine, appendJsonLine } from './bounded-durable-index.mjs';
 
+const DELIVERED_SWEEP_BATCH = 200;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const keyOf = r => JSON.stringify([r.conversation_id, r.message_id, r.role]);
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -41,6 +42,9 @@ export class DurableQueue {
     this.onAlert = onAlert; this.indexOptions = { maxCacheEntries: indexCacheEntries, maxCacheBytes: indexCacheBytes };
     this.seen = null; this.acknowledged = null; this.indexRecoveryRequired = false;
     this.flushing = false; this.closed = false;
+    this.sweepDirectory = null;
+    this.sweepFlight = null;
+    this.closeFlight = null;
     this.state = { delivered: 0, failed: 0, alerts: 0, rejected: 0, last_error: null };
   }
   alert(code) {
@@ -181,14 +185,56 @@ export class DurableQueue {
     } finally { this.flushing = false; }
   }
   sweep(now = Date.now()) {
-    for (const name of fs.readdirSync(path.join(this.dir, 'delivered'))) {
-      const p = path.join(this.dir, 'delivered', name);
-      if (name.endsWith('.json') && now - fs.statSync(p).mtimeMs > this.deliveredDays * 86400000) fs.unlinkSync(p);
+    if (this.closed) return Promise.resolve();
+    this.sweepFlight ??= this.sweepDeliveredBatch(now).finally(() => { this.sweepFlight = null; });
+    return this.sweepFlight;
+  }
+  async sweepDeliveredBatch(now) {
+    const folder = path.join(this.dir, 'delivered');
+    const cutoff = now - this.deliveredDays * 86400000;
+    try {
+      this.sweepDirectory ??= await fs.promises.opendir(folder, { bufferSize: 32 });
+      // Keep the directory cursor between batches so young entries at the
+      // beginning cannot keep older entries later in the directory from expiring.
+      for (let count = 0; count < DELIVERED_SWEEP_BATCH && !this.closed; count++) {
+        const entry = await this.sweepDirectory.read();
+        if (!entry) { await this.closeSweepDirectory(); break; }
+        if (this.closed || !entry.isFile() || !entry.name.endsWith('.json')) continue;
+        const file = path.join(folder, entry.name);
+        try {
+          const info = await fs.promises.lstat(file);
+          if (!this.closed && info.isFile() && info.mtimeMs < cutoff) await fs.promises.unlink(file);
+        } catch (error) {
+          // A file may disappear during maintenance. Other read errors should
+          // be visible without stopping the rest of this batch.
+          if (error.code !== 'ENOENT') this.alert('queue_delivered_cleanup_file_failed');
+        }
+      }
+    } catch (error) {
+      await this.closeSweepDirectory();
+      throw error;
     }
-    // pending and failed are never evicted by age/capacity. Failed needs review.
+  }
+  async closeSweepDirectory() {
+    const directory = this.sweepDirectory;
+    this.sweepDirectory = null;
+    if (directory) await directory.close();
   }
   close() {
+    if (this.closed) return this.closeFlight;
     this.closed = true;
+    if (!this.sweepFlight && !this.sweepDirectory) { this.releaseWriter(); return; }
+    // An issued unlink can still finish after closed becomes true. Keep the
+    // writer lock until that batch and its directory handle have both settled.
+    this.closeFlight = (async () => {
+      try { await this.sweepFlight; } catch { /* scheduled maintenance reports its failure */ }
+      try { await this.closeSweepDirectory(); }
+      catch { this.alert('queue_delivered_cleanup_close_failed'); }
+      finally { this.releaseWriter(); }
+    })();
+    return this.closeFlight;
+  }
+  releaseWriter() {
     this.seen?.clearCache(); this.acknowledged?.clearCache();
     try { const lock = json(this.lock); if (this.lockNonce && lock.pid === process.pid && lock.nonce === this.lockNonce) fs.unlinkSync(this.lock); } catch { /* no owned lock */ }
   }

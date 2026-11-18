@@ -136,7 +136,7 @@ export async function createAdapter(ctx, config = {}) {
   const lifeTimeoutMs = Number.isFinite(configuredLifeTimeout) ? Math.max(1, Math.min(800, configuredLifeTimeout)) : 800;
   const configuredProfileTimeout = Number(config.profileTimeoutMs ?? 800);
   const profileTimeoutMs = Number.isFinite(configuredProfileTimeout) ? Math.max(1, Math.min(800, configuredProfileTimeout)) : 800;
-  let registry, member, timer, queue, toolDependency, toolUnregister, chatUsage, proto;
+  let registry, member, timer, sweepTimer, queue, toolDependency, toolUnregister, chatUsage, proto;
   const importantShutdown = new AbortController();
   const publishCapabilities = () => {
     if (!queue?.dir) return;
@@ -347,10 +347,14 @@ export async function createAdapter(ctx, config = {}) {
     let ticking = false;
     const tick = async () => {
       if (!controller.enabled || ticking) return; ticking = true;
-      try { drainRecovery(); discoverLive(); for (const session of liveSessions()) scan(session); await queue.flush(); queue.sweep(); }
+      try { drainRecovery(); discoverLive(); for (const session of liveSessions()) scan(session); await queue.flush(); }
       finally { ticking = false; }
     };
     timer = setInterval(() => { tick().catch(() => warn('queue_tick_failed')); }, Math.max(50, config.intervalMs || 1000)); timer.unref?.();
+    sweepTimer = setInterval(() => {
+      if (controller.enabled) queue.sweep().catch(() => warn('queue_delivered_cleanup_failed'));
+    }, 60_000);
+    sweepTimer.unref?.();
     const recall = async (payload, next) => {
       const decision = await next();
       if (!controller.enabled || payload?.signal?.aborted) return decision;
@@ -529,7 +533,7 @@ export async function createAdapter(ctx, config = {}) {
       } else { toolsUnavailable('memory_tool_runtime_unavailable'); }
     }
     controller.stop = () => stopPromise ||= (async () => {
-      controller.enabled = false;sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); importantShutdown.abort(); clearInterval(timer); registry.members.delete(member);
+      controller.enabled = false;sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); importantShutdown.abort(); clearInterval(timer); clearInterval(sweepTimer); registry.members.delete(member);
       for (const off of listeners.splice(0).reverse()) { try { off(); } catch { warn('adapter_listener_cleanup_failed'); } }
       for (const session of liveSessions()) release(session);
       originals = new WeakMap();
@@ -542,18 +546,18 @@ export async function createAdapter(ctx, config = {}) {
       // Do not remove a lock while an HTTP delivery is still in flight.
       const end = Date.now() + timeoutMs + 250;
       while (queue.flushing && Date.now() < end) await new Promise(r => setTimeout(r, 20));
-      queue.close(); sessions.clear(); attachments.clear(); cache.clear();
+      await queue.close(); sessions.clear(); attachments.clear(); cache.clear();
     })();
     listen('dispose', () => controller.stop());
     ctx.effect?.(() => () => controller.stop());
     ctx.logger?.info?.('xiaojiu-brain: enabled; visible messages only; request-level recall');
   } catch (e) {
-    controller.enabled = false; clearInterval(timer); registry?.members.delete(member);
+    controller.enabled = false; clearInterval(timer); clearInterval(sweepTimer); registry?.members.delete(member);
     if (registry && !registry.members.size && proto?.prepare === registry.wrapped) { proto.prepare = registry.original; delete proto[PREPARE]; }
     for (const off of listeners.splice(0).reverse()) { try { off(); } catch {} }
     for (const session of liveSessions()) { const saved = originals.get(session); if (saved && session.append === saved.wrapped) session.append = saved.original; if (saved && session[INSTALL] === saved.wrapped) delete session[INSTALL]; }
     originals = new WeakMap(); attachments.clear(); sessions.clear(); cache.clear();
-    sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); await stopSupport();await chatUsage?.stop(); warn(String(e.message || 'adapter_initialization_failed').replace(/[^a-zA-Z0-9_:.-]/g, '')); queue?.close();
+    sessionHistory?.stop();contextManagement?.stop();config.requestBudget?.stop();config.requestBridge?.dispose(); await stopSupport();await chatUsage?.stop(); warn(String(e.message || 'adapter_initialization_failed').replace(/[^a-zA-Z0-9_:.-]/g, '')); await queue?.close();
   }
   return controller;
 }

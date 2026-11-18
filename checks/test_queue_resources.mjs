@@ -68,7 +68,7 @@ await check('80 delivered messages retain durable dedup while RAM receipt caches
     for (const cache of Object.values(resources.after80)) {
       assert(cache.entries <= 8); assert(cache.bytes <= 1024);
     }
-    q.sweep(Date.now() + 30 * 86400000);
+    await q.sweep(Date.now() + 30 * 86400000);
     assert.equal(fs.readdirSync(path.join(q.dir, 'delivered')).length, 0);
     assert.equal(q.enqueue(payload('message-0')).duplicate, true);
     assert.throws(() => q.enqueue(payload('message-0', 'Changed original.')), /body_changed/);
@@ -161,7 +161,7 @@ await check('unconfirmed upstream replies keep pending; permanent rejection and 
     assert.equal(q.stats().pending, 1); assert.equal(await q.drainUntil(first, 0), false);
     q.fetch = async () => ({ ok: false, status: 422, json: async () => ({ ok: false }) });
     await q.flush(); q.enqueue(payload('still-pending'));
-    q.sweep(Date.now() + 365 * 86400000);
+    await q.sweep(Date.now() + 365 * 86400000);
     assert.equal(q.stats().failed_files, 1); assert.equal(q.stats().pending, 1);
   } finally { q.close(); }
   const recovered = make('offline');
@@ -211,7 +211,7 @@ await check('unsupported metadata hard links use complete atomic rename under th
       try {
         assert.equal(q.enqueue(row).accepted, true);
         await q.flush(); assert.equal(q.stats().pending, 0);
-        q.sweep(Date.now() + 30 * 86400000);
+        await q.sweep(Date.now() + 30 * 86400000);
       } finally { q.close(); }
       const recovered = make(name);
       try {

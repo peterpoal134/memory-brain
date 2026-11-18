@@ -1,0 +1,77 @@
+name: Publish verified 0.2.8 delivered queue maintenance fix
+
+on:
+  push:
+    branches: [release/0.2.8-queue-maintenance]
+    paths: [.github/workflows/publish-0.2.8.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: memory-brain-release-0.2.8
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    if: github.repository == 'peterpoal134/memory-brain' && github.ref == 'refs/heads/release/0.2.8-queue-maintenance'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Build and check the reviewed public distribution
+        run: |
+          python -X utf8 scripts/build_plugin_release.py --out dist
+          python -X utf8 checks/verify_release_028.py
+      - name: Exercise official DSH 0.2.2-rc.3 without modifying an installed host
+        env:
+          DSH_RUNTIME: ${{ runner.temp }}/dsh-rc3
+          DSH_COMPAT_RUNTIME: ${{ runner.temp }}/dsh-rc3
+          MEMORY_BRAIN_ENTRY: ${{ github.workspace }}/adapters/dsh/memory-brain.mjs
+        run: |
+          node checks/prepare_compat_runtime.mjs --out "$DSH_RUNTIME"
+          node checks/test_runtime_discovery.mjs
+          node checks/test_discovery_identity.mjs
+          node checks/test_discovery_diagnostics.mjs
+          node checks/test_probe_read_errors.mjs
+          node checks/test_host_compatibility.mjs
+          node --unhandled-rejections=strict checks/test_request_bridge_admission.mjs
+          node --unhandled-rejections=strict checks/integration/run.mjs
+          node --unhandled-rejections=strict checks/launch_discovery_integration.mjs
+      - name: Preserve resource, storage and request-budget behavior
+        run: |
+          python -I -X utf8 checks/test_storage_stability.py
+          python -I -X utf8 checks/test_transport_lifecycle.py
+          python -I -X utf8 checks/test_timeout_config.py
+          python -I -X utf8 checks/test_http_stability.py --source .
+          node --unhandled-rejections=strict checks/test_onboarding_cleanup.mjs
+          node checks/test_request_budget_units.mjs
+          node checks/test_plugin.mjs
+          node checks/test_plugin_life.mjs
+          node checks/test_session_resources.mjs
+          node checks/test_queue_resources.mjs
+          node --unhandled-rejections=strict checks/test_delivered_maintenance.mjs
+      - name: Promote only after the checks pass
+        run: |
+          test "$(python -c 'import json; print(json.load(open("package.json"))["version"])')" = '0.2.8'
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = '741db9b093d989a216064a6e46dfde22d868022a'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --force -- PUBLIC-RELEASE.json SHA256SUMS.json wheels/xiaojiu_brain-0.2.8-py3-none-any.whl
+          git diff --cached --quiet || git commit -m 'build: attach verified 0.2.8 distribution'
+          git push --atomic origin HEAD:refs/heads/main HEAD:refs/heads/release/0.2.8-queue-maintenance
+      - name: Publish the verified downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.2.8 dist/memory-brain-dsh-0.2.8-public.zip dist/memory-brain-dsh-0.2.8-public.zip.sha256 --target "$(git rev-parse HEAD)" --title 'v0.2.8 已送达队列清理修复' --notes-file docs/RELEASE-0.2.8.md --latest

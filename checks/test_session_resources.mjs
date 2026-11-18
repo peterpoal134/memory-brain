@@ -29,7 +29,7 @@ class Events {
  effect(fn){this.effects.push(fn());}
  count(){return [...this.hooks.values()].reduce((n,set)=>n+set.size,0);}
 }
-async function adapter({dir=path.join(root,'queue-'+ ++serial),ctx=new Events(),maxPending=2,fetchImpl,usage=true}={}){
+async function adapter({dir=path.join(root,'queue-'+ ++serial),ctx=new Events(),maxPending=2,fetchImpl,usage=true,intervalMs=60000}={}){
  const deliveries=[];
  const fetch = fetchImpl || (async (url, init)=>{
   const payload=JSON.parse(init.body);
@@ -38,7 +38,7 @@ async function adapter({dir=path.join(root,'queue-'+ ++serial),ctx=new Events(),
   return response(404,{ok:false});
  });
  const value=await createAdapter(ctx,{enabled:true,baseUrl:'http://127.0.0.1:1',token:'synthetic-resource-token-not-live',
-  sessionModule:pathToFileURL(fixture).href,queueDir:dir,maxPending,intervalMs:60000,timeoutMs:100,
+  sessionModule:pathToFileURL(fixture).href,queueDir:dir,maxPending,intervalMs,timeoutMs:100,
   importantToolEnabled:false,historyEnabled:false,chatUsageEnabled:usage,chatUsageIntervalMs:60000,fetchImpl:fetch});
  assert(value.enabled);instances.push(value);return {value,ctx,dir,deliveries};
 }
@@ -142,6 +142,45 @@ try {
  assert(u.enqueue(finalPayload));await u.flush();
  check('a durable usage payload survives a transient identity-index write and retries without restart',()=>assert.equal(u.status().pending,0));
  await u.stop();
+
+ // Inspect the actual adapter's scheduling while triggering callbacks without
+ // waiting a minute. Deliver an original and expire its local copy.
+ const originalInterval=globalThis.setInterval, originalClearInterval=globalThis.clearInterval;
+ const timers=new Map();
+ let scheduledAdapter;
+ try {
+  globalThis.setInterval=(callback,delay)=>{
+   const handle={unref(){}};timers.set(handle,{callback,delay});return handle;
+  };
+  globalThis.clearInterval=handle=>{timers.delete(handle);};
+  scheduledAdapter=await adapter({usage:false,intervalMs:null});
+  const {value,deliveries}=scheduledAdapter;
+  const session=store.prepare('maintenance-schedule');
+  append(session,'maintenance-original');
+  const sortedTimers=[...timers.values()].sort((a,b)=>a.delay-b.delay);
+  assert.deepEqual(sortedTimers.map(timer=>timer.delay),[1000,60000]);
+  const [deliveryTimer,maintenanceTimer]=sortedTimers;
+  deliveryTimer.callback();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(deliveries.length,1);
+  const folder=path.join(value.queue.dir,'delivered');
+  const file=path.join(folder,fs.readdirSync(folder)[0]);
+  const old=new Date(Date.now()-8*86400000);fs.utimesSync(file,old,old);
+  deliveryTimer.callback();
+  await new Promise(resolve=>setImmediate(resolve));
+  check('the default one-second delivery tick leaves the expired copy for maintenance',()=>assert.equal(fs.existsSync(file),true));
+  maintenanceTimer.callback();
+  const cleanup=value.queue.sweepFlight;
+  assert.ok(cleanup,'the separate maintenance timer must start asynchronous cleanup');
+  await cleanup;
+  await value.stop();
+  check('the minute maintenance timer expires the copy and unload clears both timers',()=>{
+   assert.equal(fs.existsSync(file),false);assert.equal(timers.size,0);
+  });
+ } finally {
+  try { await scheduledAdapter?.value.stop(); }
+  finally { globalThis.setInterval=originalInterval;globalThis.clearInterval=originalClearInterval; }
+ }
 
  if(process.env.DSH_RUNTIME){
   const mod=name=>import(pathToFileURL(path.join(process.env.DSH_RUNTIME,'node_modules','@deepseek-ai',name,'lib','index.js')).href);

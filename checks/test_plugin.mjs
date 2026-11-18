@@ -52,7 +52,7 @@ try {
   check('failed second initialization cannot release the first writer lock', () => assert.throws(() => makeQueue('strict'), /already_in_use/));
   q.enqueue(good('u2')); mode = 'reject'; await q.flush();
   check('permanent rejection retained in failed', () => assert.equal(q.stats().failed_files, 1));
-  q.enqueue(good('u3')); mode = 'outage'; q.sweep(Date.now() + 100 * 86400000);
+  q.enqueue(good('u3')); mode = 'outage'; await q.sweep(Date.now() + 100 * 86400000);
   check('sweep never removes pending or failed', () => { assert.equal(q.stats().pending, 1); assert.equal(q.stats().failed_files, 1); });
   q.close(); mode = 'accept'; q = makeQueue('strict');
   const names = q.pendingFiles(); check('disk sequence does not restart at one', () => assert(Number(names[0].slice(0, 16)) >= 3));
