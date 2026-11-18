@@ -121,8 +121,16 @@ window.__ModuleLoader__.load({
       const reason = compatibility?.reason;
       if (reason === 'dsh_runtime_not_resolved' || reason === 'runtime_unavailable')
         return '未找到当前 DSH 的运行模块，尚未完成构建核验。采集和召回未启用。';
+      if (reason === 'asar_runtime_unavailable')
+        return '检测到桌面打包目录，但当前进程无法读取内部运行模块。可能是打包方式或访问环境不匹配，不一定是权限问题。采集和召回未启用。';
+      if (reason === 'runtime_access_denied')
+        return '已找到宿主位置，但系统拒绝读取运行文件。请核实当前账号的文件访问权限，并复制安全诊断。采集和召回未启用。';
       if (reason === 'required_modules_missing')
         return '已找到宿主位置，但所需运行模块不完整。采集和召回未启用。';
+      if (reason === 'required_modules_unreadable')
+        return '已找到宿主位置，但一个或多个必需模块读取失败。安全诊断会列出失败阶段和错误类别。采集和召回未启用。';
+      if (reason === 'host_module_identity_mismatch')
+        return '发现不同来源的宿主模块，暂未启用采集和召回，以免连接到另一份运行环境。请完成当前任务后重新加载插件，并复制安全诊断。';
       if (reason === 'node_22_or_later_required')
         return '宿主的 Node 版本需要为 22 或更新版本。采集和召回未启用。';
       return '已找到宿主模块，但当前构建尚未完成核验。采集和召回未启用。';
@@ -130,26 +138,49 @@ window.__ModuleLoader__.load({
     function safeDiagnostic(compatibility) {
       // Never serialize the whole status, module paths, arbitrary extra fields,
       // credentials or runtime home. Only the public compatibility facts travel.
-      const version = value => typeof value === 'string' && /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value) ? value : null;
-      const code = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(value) ? value : null;
+      compatibility = compatibility && typeof compatibility === 'object' && !Array.isArray(compatibility) ? compatibility : {};
+      const version = value => typeof value === 'string' && value.length <= 80 && /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value) ? value : null;
       const digest = value => typeof value === 'string' && /^[a-fA-F0-9]{64}$/.test(value) ? value : null;
+      const reasons = ['runtime_unavailable', 'asar_runtime_unavailable', 'runtime_access_denied', 'required_modules_missing',
+        'required_modules_unreadable', 'loop_source_invalid_utf8', 'node_22_or_later_required', 'native_request_messages_markers',
+        'verified_stock_source', 'verified_stock_source_formatting', 'unknown_loop_fingerprint', 'host_module_identity_mismatch',
+        'dsh_runtime_not_resolved', 'host_build_unverified'];
+      const errorCodes = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EISDIR', 'EINVAL', 'ELOOP', 'ENAMETOOLONG', 'EIO',
+        'EMFILE', 'ENFILE', 'ENOMEM', 'ENOTSUP', 'ENOSYS', 'EBUSY', 'EROFS', 'ETIMEDOUT', 'MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND',
+        'ERR_PACKAGE_PATH_NOT_EXPORTED', 'ERR_INVALID_PACKAGE_CONFIG', 'ERR_INVALID_PACKAGE_TARGET', 'ERR_UNSUPPORTED_DIR_IMPORT']);
+      const attemptCodes = new Set([...errorCodes, ...reasons, 'resolved', 'not_directory', 'modules_not_found', 'same_module_set',
+        'module_identity_mismatch', 'module_resolution_failed', 'candidate_limit', 'unknown']);
+      const sources = ['environment', 'desktop_host_argument', 'host_module_anchor', 'asar_host_entry', 'electron_resources',
+        'electron_executable', 'plugin_module_anchor', 'working_directory_anchor', 'host_module_anchor_search',
+        'plugin_module_anchor_search', 'working_directory_anchor_search', 'unresolved'];
+      const moduleNames = ['loop', 'session', 'llm', 'tools', 'connection', 'compaction', 'basicCompaction', 'toolResultPruner', 'tokenMeter', 'cordis'];
+      const layout = value => ['asar', 'directory', 'unknown'].includes(value) ? value : 'unknown';
       const result = { supported: false, mode: 'diagnostic_only',
-        reason: code(compatibility.reason) || 'host_build_unverified',
+        reason: reasons.includes(compatibility.reason) ? compatibility.reason : 'host_build_unverified',
         plugin_version: version(compatibility.plugin_version), node_version: version(compatibility.node_version),
-        platform: code(compatibility.platform), arch: code(compatibility.arch), modules: {} };
-      for (const name of ['loop', 'session', 'llm', 'tools', 'connection', 'compaction', 'basicCompaction', 'toolResultPruner', 'tokenMeter', 'cordis']) {
+        platform: ['aix', 'android', 'darwin', 'freebsd', 'linux', 'openbsd', 'sunos', 'win32'].includes(compatibility.platform) ? compatibility.platform : null,
+        arch: ['arm', 'arm64', 'ia32', 'loong64', 'mips', 'mipsel', 'ppc', 'ppc64', 'riscv64', 's390', 's390x', 'x64'].includes(compatibility.arch) ? compatibility.arch : null,
+        modules: {} };
+      for (const name of moduleNames) {
         const item = compatibility.modules?.[name];
         if (!item || typeof item !== 'object') continue;
         result.modules[name] = { version: version(item.version), sha256: digest(item.sha256) };
         if (name === 'loop' && digest(item.canonical_sha256)) result.modules[name].canonical_sha256 = digest(item.canonical_sha256);
       }
       for (const name of ['loop_sha256', 'loop_canonical_sha256']) if (digest(compatibility[name])) result[name] = digest(compatibility[name]);
+      if (Array.isArray(compatibility.read_errors)) result.read_errors = compatibility.read_errors.slice(0, 24)
+        .filter(item => item && typeof item === 'object' && ['runtime', ...moduleNames].includes(item.module) && ['realpath', 'stat', 'read'].includes(item.stage))
+        .map(item => ({ module: item.module, stage: item.stage, code: errorCodes.has(item.code) ? item.code : 'unknown' }));
       const discovery = compatibility.discovery;
-      if (discovery && typeof discovery === 'object') result.discovery = {
-        source: code(discovery.source),
-        layout: ['asar', 'directory', 'unknown'].includes(discovery.layout) ? discovery.layout : 'unknown',
+      if (discovery && typeof discovery === 'object' && !Array.isArray(discovery)) result.discovery = {
+        source: sources.includes(discovery.source) ? discovery.source : null,
+        layout: layout(discovery.layout),
         candidate_count: Number.isInteger(discovery.candidate_count) && discovery.candidate_count >= 0 && discovery.candidate_count <= 64 ? discovery.candidate_count : null,
         electron_version: version(discovery.electron_version),
+        asar_enabled: typeof discovery.asar_enabled === 'boolean' ? discovery.asar_enabled : null,
+        attempts: Array.isArray(discovery.attempts) ? discovery.attempts.slice(0, 32)
+          .filter(item => item && typeof item === 'object' && sources.includes(item.source) && ['resolve', 'candidate', 'identity'].includes(item.stage))
+          .map(item => ({ source: item.source, layout: layout(item.layout), stage: item.stage, code: attemptCodes.has(item.code) ? item.code : 'unknown' })) : [],
       };
       return result;
     }
@@ -359,7 +390,7 @@ window.__ModuleLoader__.load({
         return h('div', { style: styles.root },
           h('h2', { style: { ...styles.heading, fontSize: 21 } }, '忆核大脑 · 运行环境诊断'),
           h('p', { role: 'status', style: styles.notice }, compatibilityMessage(status.compatibility)),
-          h('p', { style: styles.muted }, '这里只读取兼容性信息。未找到运行模块与找到后构建未核验是两种不同原因；请复制下方安全诊断。版本号本身不足以确认兼容。'),
+          h('p', { style: styles.muted }, '这里只读取兼容性信息。模块未找到、读取失败和构建未核验需要分别处理。请先完成当前任务，再重新加载插件，并复制下方安全诊断交给维护者；已有记忆保持不变。版本号本身不足以确认兼容。'),
           h('p', { style: styles.muted }, '手机可能只是网页访问端；如果是手机独立 App，需要由其作者核实内置 Node、Python 及插件接口能力，当前不宣称已兼容。'),
           h('div', { style: styles.row }, button('重新检查', refresh, { disabled: pending }), button('复制安全诊断', copyDiagnostic, { disabled: false })),
           networkError ? h('p', { role: 'alert', style: styles.error }, networkError) : null,
@@ -370,7 +401,7 @@ window.__ModuleLoader__.load({
             h('textarea', { readOnly: true, value: diagnosticText, rows: 12, spellCheck: false,
               'aria-label': '手动复制安全诊断', style: { ...styles.input, fontFamily: 'monospace', fontSize: 12 },
               onFocus: event => event.target.select?.() })) : null,
-          h('p', { style: styles.muted }, '诊断只包含版本、平台、模块指纹、宿主布局和发现状态，不包含目录、模型密钥或对话正文。'));
+          h('p', { style: styles.muted }, '诊断只包含版本、平台、模块指纹、宿主布局、发现阶段和错误类别，不包含目录、模型密钥或对话正文。'));
       }
       return h('div', { style: styles.root },
         h('h2', { style: { ...styles.heading, fontSize: 21 } }, '忆核大脑 · 首次设置'),

@@ -61,7 +61,7 @@ try {
     return decision;
   });
   const prepareBefore=SessionStore.prototype.prepare;
-  const pluginOptions=process.env.MEMORY_BRAIN_ENTRY ? {enabled:true,runtimePath:runtime,brainConfigFile:localConfig,queueNamespace:'integration',autoStart:false,intervalMs:50,timeoutMs:3000} :
+  const pluginOptions=process.env.MEMORY_BRAIN_ENTRY ? {enabled:true,...(process.env.MEMORY_BRAIN_AUTO_DISCOVERY==='1'?{}:{runtimePath:runtime}),brainConfigFile:localConfig,queueNamespace:'integration',autoStart:false,intervalMs:50,timeoutMs:3000} :
     {enabled:true,sessionModule:path.join(runtime,'node_modules','@deepseek-ai','dsh-session','lib','index.js'),baseUrl,token,queueDir,intervalMs:50,timeoutMs:3000};
   pluginFiber=ctx.plugin(brainPlugin,pluginOptions);
   await pluginFiber.await();
