@@ -16,17 +16,20 @@
 
 1. 从当前面板创建在线备份并下载，检查 ZIP CRC、manifest 记录和数据库 `PRAGMA integrity_check`。本版备份manifest没有SHA-256清单；如你另存过归档校验值，才用它比对归档SHA-256。核对原 `owner`、数据目录、消息数量，保存上述独立配置材料。
 2. 暂停 DSH 中该记忆插件采集，确认 pending 队列已排空、没有未处理 failed；存在积压时先保留现场处理，不继续切换。正常停止旧内核，确认原端口已释放、旧 PID 已结束。查询失败、401、超时都不能证明服务停止。
-3. 将完整新包解压到另一个固定目录。不要覆盖旧目录，不要移动原数据库。只建立新 `.venv` 并离线安装新 wheel；**本步骤不要运行会创建新空配置的首装入口**。在新目录执行：
+3. 从 [本仓库 v0.2.12 发布页](https://github.com/peterpoal134/memory-brain/releases/tag/v0.2.12) 下载完整安装 ZIP，解压到另一个固定目录。先校验文件，校验通过后只建立新 `.venv` 并离线安装新 wheel。原配置和数据库继续留在原目录。在新目录运行整段 PowerShell：
 
 ```powershell
-$release = Get-Content -Raw -Encoding UTF8 -LiteralPath .\PUBLIC-RELEASE.json -ErrorAction Stop | ConvertFrom-Json
-$kernelVersion = $release.kernel_version
-$wheelPath = ".\wheels\xiaojiu_brain-${kernelVersion}-py3-none-any.whl"
-if (-not $kernelVersion -or -not (Test-Path -LiteralPath $wheelPath -PathType Leaf)) {
-    throw '发布清单缺少内核版本，或完整包中没有对应 wheel。'
+& {
+    $ErrorActionPreference = 'Stop'
+    & .\scripts\verify-package.ps1 -RequireManifest
+    $release = Get-Content -Raw -Encoding UTF8 -LiteralPath .\PUBLIC-RELEASE.json | ConvertFrom-Json
+    $kernelVersion = $release.kernel_version
+    $wheelPath = ".\wheels\xiaojiu_brain-${kernelVersion}-py3-none-any.whl"
+    python -m venv .venv
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the upgrade virtual environment.' }
+    .\.venv\Scripts\python.exe -I -m pip install --no-index --find-links .\wheels --only-binary=:all: $wheelPath
+    if ($LASTEXITCODE -ne 0) { throw 'Could not install the verified kernel wheel.' }
 }
-python -m venv .venv
-.\.venv\Scripts\python.exe -I -m pip install --no-index --find-links .\wheels --only-binary=:all: $wheelPath
 ```
 
 4. 保留原配置文件的原位置，使其相对 `data_dir`、owner、口令与模型环境变量约定都不改变。使用新目录解释器配原配置启动，`<原配置绝对路径>` 换成真实路径：

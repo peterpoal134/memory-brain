@@ -11,6 +11,7 @@ from collections import OrderedDict
 from array import array
 from datetime import datetime, timezone
 import hashlib
+from itertools import islice
 import json
 import math
 import os
@@ -730,11 +731,12 @@ class Store:
 
     def lexical_search(self, owner, query, conversation_id=None, limit=40, as_of=None, kind=None,
                        include_archived=False, kinds=None, cutoff_message_id=None, *, include_details=True,
-                       query_tokens=None):
+                       query_tokens=None, admit_id=None):
         """Retrieve ranked keyword hits, optionally with only IDs and lexical scores."""
         terms = _lexical_tokens(str(query or "")) if query_tokens is None else query_tokens
         tokens = list(dict.fromkeys(terms))[:256]
-        if not tokens:
+        limit = max(0, min(1000, int(limit)))
+        if not tokens or not limit:
             return []
         expression = " OR ".join('"'+t.replace('"','""')+'"' for t in tokens)
         where,args = ["document_fts MATCH ?","d.owner=?",
@@ -748,13 +750,19 @@ class Store:
             where.append('NOT EXISTS (SELECT 1 FROM document_dependencies dep WHERE dep.document_id=d.id AND dep.message_id>?)')
             args.append(cutoff_message_id)
         self._kind_filter(where,args,kind,kinds,prefix="d.")
-        args.append(max(0,min(1000,int(limit))))
         projection = "d.*" if include_details else "d.id"
+        suffix = " LIMIT ?" if admit_id is None else ""
+        if admit_id is None:
+            args.append(limit)
         with self.lock:
             found = self.conn.execute(f"""SELECT {projection},bm25(document_fts) AS lexical_score
                 FROM document_fts JOIN documents d ON d.id=document_fts.document_id WHERE """+
-                " AND ".join(where)+" ORDER BY lexical_score,d.recorded_at DESC,d.id LIMIT ?",args)
-            return [self._document(r) if include_details else dict(r) for r in found]
+                " AND ".join(where)+" ORDER BY lexical_score,d.recorded_at DESC,d.id"+suffix,args)
+            # Apply disclosure/source admission before a hit consumes the limit.
+            # Membership filtering can stream results without binding an
+            # arbitrarily large list of IDs as SQL variables.
+            rows = found if admit_id is None else islice((r for r in found if admit_id(str(r["id"]))), limit)
+            return [self._document(r) if include_details else dict(r) for r in rows]
 
     def get_document(self, owner, document_id):
         with self.lock:

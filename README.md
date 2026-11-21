@@ -2,9 +2,9 @@
 
 忆核大脑是独立运行的本机记忆服务，提供持久原话、后台整理、带出处的检索和控制面板。当前提供 DSH 适配器；其它宿主可使用同一 HTTP 协议接入。公开名称为 **忆核大脑 / Memory Brain**。本版将长期记忆与配套上下文管理放在同一插件中。
 
-**当前版本为 `0.2.11` 框架正式版，插件与 Python 内核版本一致。** 发布内容包括可复用的记忆架构、HTTP 接口、DSH 适配器和可直接安装的参考实现。版本范围见 [发布说明](docs/RELEASE-0.2.11.md)。
+**当前版本为 `0.2.12` 框架正式版，插件与 Python 内核版本一致。** 发布内容包括可复用的记忆架构、HTTP 接口、DSH 适配器和可直接安装的参考实现。版本范围见 [发布说明](docs/RELEASE-0.2.12.md)。
 
-本次修订处理会话卸载后的引用回收、原话与用量去重索引的常驻内存增长，并约束插件自身的工具结果裁剪时机。长期去重依据仍保存到磁盘，内存只保留有限缓存；关闭会话时尚未入队的合规消息先保存在本机恢复队列。保留 0.2.3 的宿主发现、已有活动会话补采、连接重试、上下文管理与来源边界。0.2.5 另修正请求读写与上游响应的资源边界、事务失败恢复、备份自等待和插件设置清理异常。详见 [资源管理与升级](docs/RESOURCE-MANAGEMENT.md)。
+插件在卸载会话后回收引用，原话与用量的长期去重依据保存在磁盘，内存只保留有限缓存。关闭会话时尚未入队的合规消息先保存在本机恢复队列。已有活动会话补采、连接重试、上下文管理和来源边界可继续使用。详见 [资源管理与升级](docs/RESOURCE-MANAGEMENT.md)。
 
 官方 DSH `0.2.2-rc.2` 与 `rc.3` 的已验收 AgentLoop 使用相同源码。插件校验完整源码及运行中的请求方法，已核验构建的等价格式可以完整接入。尚未核验的代码结构显示只读诊断，符合条件时可选择仅归档。详见[兼容说明](docs/DSH-DESKTOP-COMPAT.md)。
 
@@ -43,7 +43,7 @@ DSH 可见原话 → 持久队列 → 原话库（即刻可搜）
 
 DSH 完整接入按宿主能力核验。指纹尚未核验但会话接口可用时，可显式启用[仅归档模式](docs/DSH-DESKTOP-COMPAT.md#仅归档模式)，并在独立面板手动检索。
 
-通过 GitHub/npm 安装到 DSH 后，打开 **插件详情 → 配置 → 忆核大脑 · 首次设置**，按“准备环境、可选模型配置、启用”完成接入。完整步骤见 [首次运行引导](docs/DSH-FIRST-RUN.md) 和 [DSH 安装说明](docs/DSH-INSTALL.md)。首次没有 Python 环境或私人配置时也能显示设置卡；安装插件本身不会下载依赖或开始采集。GitHub/npm 安装应使用发布者提供的固定版本地址。首次体验也可下载发布页的完整 ZIP，解压后使用下面的安装方式。
+在 DSH 中使用本仓库的固定版本地址 `git+https://github.com/peterpoal134/memory-brain.git#v0.2.12` 安装，或从 [本仓库 v0.2.12 发布页](https://github.com/peterpoal134/memory-brain/releases/tag/v0.2.12) 下载完整安装 ZIP。同名 npm 安装标识当前指向其他仓库，请使用这里的版本地址或 ZIP。通过固定版本地址安装后，打开 **插件详情 → 配置 → 忆核大脑 · 首次设置**，按“准备环境、可选模型配置、启用”完成接入。完整步骤见 [首次运行引导](docs/DSH-FIRST-RUN.md) 和 [DSH 安装说明](docs/DSH-INSTALL.md)。
 
 整理支持原话片段编号定位和密集批次拆分，部分选择题可附加存疑提示；日期线索在部分低落或拒绝提醒表达下受到抑制。`update_candidates_enabled`、`contextual_relations_enabled`、`due_candidates_enabled` 均默认关闭。已有安装按[维护说明](docs/MAINTENANCE.md)备份并排升级，分别核对插件与内核版本。其他系统及 Android DSHA 的完整安装仍待真机适配。
 
@@ -57,7 +57,7 @@ python -m xiaojiu_brain --config ./private/config.json init --data-dir ./data
 python -m xiaojiu_brain --config ./private/config.json serve --open-panel
 ```
 
-普通 ZIP 仍可解压到固定目录，先双击 `安装.cmd`，再在 DSH 原生插件管理器用 `link:` 引用该完整目录；也可双击 `打开忆核大脑.cmd` 单独打开面板。公开包统一使用“忆核大脑”的启动和停止入口。首次不配置模型可在设置卡直接启用基础原话保存和词法检索；语义与自动整理会明确等待配置，不能视为已完成整理。本轮完整首启流程面向 Windows，不将 Python 内核可运行等同于其它平台的宿主安装已适配。
+将发布页的完整安装 ZIP 解压到固定目录，先双击 `安装.cmd`，再在 DSH 原生插件管理器用 `link:` 引用该完整目录。也可双击 `打开忆核大脑.cmd` 单独打开面板。首次不配置模型可在设置卡直接启用基础原话保存和词法检索。语义检索与自动整理需另行配置模型。近期完成验收的首启流程面向 Windows。
 
 公开包仅保留以下六个 Windows 入口：
 
@@ -137,7 +137,7 @@ python -m xiaojiu_brain --config ./private/config.json serve --open-panel
 
 ## 接入 DSH
 
-建议先在独立 profile 的原生插件管理页安装根包，进入 [首次设置](docs/DSH-FIRST-RUN.md)，确认显示“已接入 DSH”后，再用一条新的非敏感对话确认入库和召回。GitHub/npm 新安装无需预先运行独立安装器；已有 ZIP/`link:` 安装沿用原路径。更底层的程序接入见 [适配器说明](adapters/dsh/README.md)。
+建议先在独立 profile 的原生插件管理页按 [安装说明](docs/DSH-INSTALL.md) 安装根包，进入 [首次设置](docs/DSH-FIRST-RUN.md)，确认显示“已接入 DSH”后，再用一条新的非敏感对话确认入库和召回。GitHub 固定版本安装无需预先运行独立安装器。更底层的程序接入见 [适配器说明](adapters/dsh/README.md)。
 
 接入前检查其它记忆采集、召回插件和模型代理，避免重复采集或重复注入。切换前备份原配置；本插件不自动改写模型路由、人格或旧记忆。
 
@@ -193,5 +193,5 @@ python -m xiaojiu_brain --config ./private/config.json import-legacy --source <�
 生活与情绪采用有界日常基线、真实活动响应和分轴半衰期，面板可查看增减依据与事件冷却。具体参数和边界见 [日常状态规则](docs/DAILY-STATE-RULES.md)。
 
 
-升级与备份恢复见[维护说明](docs/MAINTENANCE.md)，当前版本范围见[发布说明](docs/RELEASE-0.2.11.md)，对话账本与参考估费见[对话用量说明](docs/CHAT-USAGE.md)。
+升级与备份恢复见[维护说明](docs/MAINTENANCE.md)，当前版本范围见[发布说明](docs/RELEASE-0.2.12.md)，对话账本与参考估费见[对话用量说明](docs/CHAT-USAGE.md)。
 

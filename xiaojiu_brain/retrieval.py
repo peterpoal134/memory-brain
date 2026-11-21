@@ -25,6 +25,7 @@ from .recall_relevance import (
     SEMANTIC_TOP_MARGIN, STRONG_SEMANTIC_SCORE, LexicalSignal,
     evidence_identity, low_information, semantic_floor,
 )
+from .semantic_relevance import SemanticSignal
 
 
 _CORE_ROUTES = ("raw_lexical", "derived_lexical", "raw_semantic", "derived_semantic")
@@ -98,6 +99,10 @@ def _cosine_for_query(prepared, vector):
         return sum(x*y for x, y in zip(prepared[0], values)) / norm if norm else None
     except (ValueError, TypeError):
         return None
+
+
+def _admit_automatic_similarity(score, floor, strongest):
+    return score >= floor and (score >= STRONG_SEMANTIC_SCORE or score >= strongest - SEMANTIC_TOP_MARGIN)
 
 
 def _overlap(a, b):
@@ -291,27 +296,8 @@ class Retriever:
         if trace["invalid_source_documents"]:
             gaps.append({"code": "source_unavailable_or_excluded", "count": trace["invalid_source_documents"]})
 
-        normalized_claims={}
-        for key,doc in eligible.items():
-            if doc.get('kind') not in ('fact','summary'):continue
-            checked=[(messages[ref['message_id']],ref['start'],ref['end']) for ref in references[key]]
-            claim=canonical_claim(doc.get('metadata') or {},checked_sources=checked,timezone=str(self.timezone))
-            if claim is not None:normalized_claims[key]=claim
         routes = {name: [] for name in _CORE_ROUTES}
-        lexical_options = {} if lexical_signal is None else {"query_tokens": lexical_signal.tokens}
-        try:
-            for kind, route in [("raw", "raw_lexical"), ("derived", "derived_lexical")]:
-                lexical = self.store.lexical_search(owner, query, conversation_id=conversation_id,
-                    limit=40, as_of=cutoff, kind=kind, include_archived=include_archived,
-                    cutoff_message_id=cutoff_message_id, include_details=False, **lexical_options)
-                for d in lexical:
-                    key = str(d["id"])
-                    if (key in eligible and key not in routes[route]
-                            and (lexical_signal is None or lexical_signal.matches(eligible[key]["text"]))):
-                        routes[route].append(key)
-        except Exception as exc:
-            degraded.append("lexical_provider_error:" + type(exc).__name__)
-        similarities = {}
+        similarities, floor = {}, -math.inf
         if embedder is None:
             degraded.append("embedding_not_configured")
         elif eligible or not automatic:
@@ -321,29 +307,81 @@ class Retriever:
                     raise ValueError("invalid query embedding")
                 model = str(embedder.model)
                 prepared_query = _prepare_cosine_query(vectors[0])
+                signal = SemanticSignal(query) if automatic else None
+                indexed_count = 0
                 for key, d in eligible.items():
                     if d.get("vector_model") != model:
                         continue
                     score = _cosine_for_query(prepared_query, d.get("vector"))
                     if score is not None:
-                        similarities[key] = score
+                        indexed_count += 1
+                        if signal is None or signal.matches(d["text"]):
+                            similarities[key] = score
                 floor = semantic_floor(model) if automatic else -math.inf
-                strongest = max(similarities.values(), default=floor)
-                for kind, route in [(True, "raw_semantic"), (False, "derived_semantic")]:
-                    keys = [key for key, score in similarities.items()
-                            if score >= floor and (eligible[key].get("kind") == "raw") == kind
-                            and (not automatic or score >= STRONG_SEMANTIC_SCORE or score >= strongest - SEMANTIC_TOP_MARGIN)]
-                    routes[route] = sorted(keys, key=lambda key: (-similarities[key], key))[:40]
                 trace["embedding_model"] = model
-                trace["semantic_indexed_documents"] = len(similarities)
+                trace["semantic_indexed_documents"] = indexed_count
                 if automatic:
                     trace["semantic_min_similarity"] = floor
-                if len(similarities) < len(eligible):
+                    trace["semantic_label_conflicts"] = indexed_count - len(similarities)
+                if indexed_count < len(eligible):
                     degraded.append("semantic_index_incomplete")
             except Exception as exc:
+                similarities.clear()
                 degraded.append("embedding_provider_error:" + type(exc).__name__)
         else:
             trace["semantic_indexed_documents"] = 0
+
+        if automatic:
+            # A generated document may propose a match, but each original span
+            # must independently match the query. A raw vector grounds only
+            # the exact span it embeds, never a neighboring or shorter quote.
+            raw_scores = {key: score for key, score in similarities.items() if eligible[key].get("kind") == "raw"}
+            raw_top = max(raw_scores.values(), default=floor)
+            semantic_spans = {
+                (ref["message_id"], ref["start"], ref["end"])
+                for key, score in raw_scores.items() if _admit_automatic_similarity(score, floor, raw_top)
+                for ref in references[key]
+            }
+            for key, doc in list(eligible.items()):
+                if doc.get("kind") == "raw":
+                    continue
+                refs = references[key]
+                grounded = [ref for ref in refs if lexical_signal.matches(ref["text"])
+                            or (ref["message_id"], ref["start"], ref["end"]) in semantic_spans]
+                if not grounded:
+                    del eligible[key], references[key]
+                    similarities.pop(key, None)
+                elif len(grounded) < len(refs):
+                    references[key] = grounded
+                    partially_filtered_sources.add(key)
+
+        if similarities:
+            strongest = max(similarities.values())
+            for raw, route in [(True, "raw_semantic"), (False, "derived_semantic")]:
+                keys = [key for key, score in similarities.items()
+                        if (eligible[key].get("kind") == "raw") == raw
+                        and (not automatic or _admit_automatic_similarity(score, floor, strongest))]
+                routes[route] = sorted(keys, key=lambda key: (-similarities[key], key))[:40]
+
+        def admit_lexical_id(key):
+            return key in eligible and (lexical_signal is None or lexical_signal.matches(eligible[key]["text"]))
+
+        lexical_options = {} if lexical_signal is None else {"query_tokens": lexical_signal.tokens}
+        try:
+            for kind, route in [("raw", "raw_lexical"), ("derived", "derived_lexical")]:
+                lexical = self.store.lexical_search(owner, query, conversation_id=conversation_id,
+                    limit=40, as_of=cutoff, kind=kind, include_archived=include_archived,
+                    cutoff_message_id=cutoff_message_id, include_details=False, admit_id=admit_lexical_id, **lexical_options)
+                routes[route] = list(dict.fromkeys(str(d["id"]) for d in lexical))
+        except Exception as exc:
+            degraded.append("lexical_provider_error:" + type(exc).__name__)
+
+        normalized_claims={}
+        for key,doc in eligible.items():
+            if doc.get('kind') not in ('fact','summary'):continue
+            checked=[(messages[ref['message_id']],ref['start'],ref['end']) for ref in references[key]]
+            claim=canonical_claim(doc.get('metadata') or {},checked_sources=checked,timezone=str(self.timezone))
+            if claim is not None:normalized_claims[key]=claim
 
         route,relation_trace=relation_candidates(eligible,normalized_claims,query,owner,conversation_id)
         routes['entity_relation']=route;trace['relations']=relation_trace

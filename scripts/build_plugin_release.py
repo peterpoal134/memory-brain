@@ -10,20 +10,32 @@ from email.parser import Parser
 PUBLIC_DOCS=('BACKGROUND-DERIVATION.md','CHAT-USAGE.md','BRANDING.md','CONTRACT.md','DAILY-STATE-RULES.md',
     'LIFE-LAYER.md','MEMORY-MAP.md','OBSERVATORY-API.md','PROFILE-IMPORTANT.md','DSH-INSTALL.md',
     'SEMANTIC-MEMORY.md','TIME-SEMANTICS.md','DSH-DESKTOP-COMPAT.md','DSH-FIRST-RUN.md',
-    'RELEASE-0.2.3.md','RELEASE-0.2.4.md','RELEASE-0.2.5.md','RELEASE-0.2.6.md','RELEASE-0.2.7.md','RELEASE-0.2.8.md','RELEASE-0.2.9.md','RELEASE-0.2.10.md','RELEASE-0.2.11.md','RESOURCE-MANAGEMENT.md','CONTEXT-MANAGEMENT.md','MAINTENANCE.md')
+    'RELEASE-0.2.3.md','RELEASE-0.2.4.md','RELEASE-0.2.5.md','RELEASE-0.2.6.md','RELEASE-0.2.7.md','RELEASE-0.2.8.md','RELEASE-0.2.9.md','RELEASE-0.2.10.md','RELEASE-0.2.11.md','RELEASE-0.2.12.md','RESOURCE-MANAGEMENT.md','CONTEXT-MANAGEMENT.md','MAINTENANCE.md')
 PUBLIC_SCRIPTS=('install.ps1','start-local.ps1','open-panel.ps1','connect-dsh.ps1','register-dsh.mjs',
     'verify-package.ps1','build_brain.mjs','build_fallback.py','build_plugin_release.py','build_release.py','dsh_plan.py',
     'dsh-request-hook.mjs','dsh-compat.ps1','build_runtime_wheel.py','dsh-compat-report.mjs')
 ROOT_FILES=('README.md','LICENSE','NOTICE.md','pyproject.toml','MANIFEST.in','gitignore.template','package.json','cordis.patch.yml',
     '安装.cmd','打开忆核大脑.cmd','停止忆核大脑.cmd','接入DSH.cmd','移除DSH接入.cmd','DSH兼容性检查.cmd')
-FORBIDDEN_NAMES={'private','data','artifacts','dist','node_modules','.venv','__pycache__','.git','tests'}
-FORBIDDEN_SUFFIXES={'.db','.sqlite','.sqlite3','.dpapi','.log','.zstd','.pyc','.pyo','.pem','.key','.pfx','.p12','.kdbx','.exe','.dll'}
+FORBIDDEN_NAMES={'private','.private','data','logs','backups','artifacts','dist','node_modules','.venv','__pycache__','.git','tests'}
+FORBIDDEN_SUFFIXES={
+    '.db','.db-wal','.db-shm','.db-journal','.sqlite','.sqlite3','.sqlite-wal','.sqlite-shm',
+    '.sqlite3-wal','.sqlite3-shm','.dpapi','.log','.jsonl','.zstd','.pyc','.pyo',
+    '.pem','.key','.pfx','.p12','.kdbx','.exe','.dll',
+}
 LOCAL_IDENTIFIERS=()
 CREDENTIAL_SIGNATURE=re.compile(
     rb'(?<!\w)(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{35,}|'
     rb'sk-(?:proj-|ant-|or-v1-)?[A-Za-z0-9_-]{32,}|xox[baprs]-[A-Za-z0-9-]{20,}|'
     rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)'
 )
+CREDENTIAL_ASSIGNMENT=re.compile(
+    rb'''(?i)\b(?:api[_-]?(?:key|token)|access[_-]?token|client[_-]?secret|password|private[_-]?key)["']?'''
+    rb'''\s*[:=]\s*(["'])[A-Za-z0-9_./+=-]{28,}\1'''
+)
+LOCAL_PROFILE_PATH=re.compile(
+    rb'''(?im)(?:[A-Za-z]:[\\/]Users[\\/]|(?<![^\s"'=(])/(?:Users|home)/)([^\\/\x00-\x1f"'=()]+)[\\/]'''
+)
+PROFILE_PLACEHOLDERS={b'default', b'example', b'public', b'user', b'username', b'you', b'yourname'}
 
 def public_sources(root):
     files={root/name for name in ROOT_FILES}
@@ -80,13 +92,20 @@ def local_identifiers(root):
         for value in {item,item.replace('\\','/'),item.replace('/','\\')})
 
 def validate_content(name,content,secrets):
-    parts=Path(name).parts
-    if any(p in FORBIDDEN_NAMES for p in parts) or Path(name).suffix in FORBIDDEN_SUFFIXES:raise RuntimeError('Excluded private/runtime file: '+name)
-    if content.startswith(b'SQLite format 3\x00'):raise RuntimeError('Embedded database found in '+name)
-    if CREDENTIAL_SIGNATURE.search(content):raise RuntimeError('Credential signature found in '+name)
+    path=PurePosixPath(name.lower())
+    blocked_part=any(part in FORBIDDEN_NAMES or part.startswith(('.env.', '.credentials'))
+                     or part=='.env' for part in path.parts)
+    if blocked_part or path.suffix in FORBIDDEN_SUFFIXES or '.log.' in path.name:
+        raise RuntimeError('Excluded private/runtime file: '+name)
+    if content.startswith(b'SQLite format 3\x00'):
+        raise RuntimeError('Embedded database found in '+name)
+    if CREDENTIAL_SIGNATURE.search(content) or CREDENTIAL_ASSIGNMENT.search(content):
+        raise RuntimeError('Credential signature found in '+name)
     if Path(name).name in ('brain-fallback.png','LIVE-CUTOVER-20261108.md','ACCEPTANCE.md','PANEL-LAUNCHER-FIX-20261108.md','LEGACY-PRIVATE-MAPPING.md'):
         raise RuntimeError('Excluded internal/uncleared asset: '+name)
     normalized=content.replace(b'\\\\',b'\\')
+    if any(match[1].lower() not in PROFILE_PLACEHOLDERS for match in LOCAL_PROFILE_PATH.finditer(normalized)):
+        raise RuntimeError('Absolute user-profile path found in '+name)
     for marker in LOCAL_IDENTIFIERS:
         if marker.lower() in normalized.lower():raise RuntimeError('Local-machine identifier found in '+name)
     for value in secrets:

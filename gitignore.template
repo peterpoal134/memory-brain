@@ -9,6 +9,8 @@ data/
 private/
 tmp/
 .env
+.env.*
+!.env.example
 .credentials*
 tests/integration/run-*/
 artifacts/
@@ -16,3 +18,15 @@ models/
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.dpapi
+*.log
+*.log.*
+*.jsonl
+!*.example.jsonl
+logs/
+backups/

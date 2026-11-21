@@ -1,0 +1,3 @@
+# The release manifest verifies the exact bytes of tracked files.
+# Keep those bytes when checking out the release on Windows.
+* -text

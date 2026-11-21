@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-brain",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "type": "module",
   "description": "Memory Brain: standalone evidence-first memory kernel, DSH adapter and local 3D control panel",
   "license": "AGPL-3.0-only",
@@ -82,7 +82,7 @@
     "xiaojiu_brain/static/cortex/*.md",
     "xiaojiu_brain/static/vendor/*.md",
     "wheels/tzdata-2026.6-py2.py3-none-any.whl",
-    "wheels/xiaojiu_brain-0.2.11-py3-none-any.whl",
+    "wheels/xiaojiu_brain-0.2.12-py3-none-any.whl",
     "docs/DSH-INSTALL.md",
     "docs/DSH-DESKTOP-COMPAT.md",
     "docs/DSH-FIRST-RUN.md",
@@ -143,6 +143,7 @@
     "docs/RELEASE-0.2.8.md",
     "docs/RELEASE-0.2.9.md",
     "docs/RELEASE-0.2.10.md",
-    "docs/RELEASE-0.2.11.md"
+    "docs/RELEASE-0.2.11.md",
+    "docs/RELEASE-0.2.12.md"
   ]
 }

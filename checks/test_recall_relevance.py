@@ -143,6 +143,52 @@ class RecallPrecision(unittest.TestCase):
             with self.subTest(query=query):
                 self.assertEqual([item['text'] for item in self.recall(query)['evidence']], [note])
 
+    def test_polite_preamble_does_not_become_a_required_topic(self):
+        note = '贴吧的登录测试已完成。'
+        self.ingest(note)
+        for query in ('请问，贴吧是什么？', '想问一下贴吧是什么？',
+                      '你好，麻烦你告诉我贴吧是什么？', '请问您知道贴吧是什么吗？',
+                      '请问下贴吧是什么？', '问一下贴吧是什么？'):
+            with self.subTest(query=query):
+                self.assertEqual([item['text'] for item in self.recall(query)['evidence']], [note])
+
+    def test_lexical_rejects_the_right_cjk_qualifier_for_the_wrong_subject(self):
+        self.ingest('小米手机电池寿命通常为三年。')
+        self.ingest('苹果手机最近更新。小米手机电池寿命通常为三年。')
+        query = '苹果手机电池寿命'
+        self.assert_empty(self.recall(query))
+        note = '苹果手机的电池寿命和循环次数有关。'
+        self.ingest(note)
+        self.assertEqual([item['text'] for item in self.recall(query)['evidence']], [note])
+
+    def test_lexical_english_subject_cannot_be_replaced_by_generic_terms(self):
+        self.ingest('The Nginx configuration file is in the test directory.')
+        self.ingest('DeepSeek writes drafts. The Nginx configuration file is in the test directory.')
+        self.ingest('The DeepSeek log file is in the application directory.')
+        query = 'Where is the DeepSeek configuration file?'
+        self.assert_empty(self.recall(query))
+        note = 'The DeepSeek configuration file is in the application directory.'
+        self.ingest(note)
+        self.assertEqual([item['text'] for item in self.recall(query)['evidence']], [note])
+
+    def test_lexical_retains_named_topic_without_english_location_framing(self):
+        key = 'The spare shed key is in the copper toolbox, underneath the folding ruler.'
+        charges = 'Check the Usage Ledger to see per-provider token charges. Export in CSV format.'
+        self.ingest(key)
+        self.ingest(charges)
+        for query, note in [('Where did I leave the spare key for the shed?', key),
+                            ('Where are provider charges listed?', charges)]:
+            with self.subTest(query=query):
+                self.assertEqual([item['text'] for item in self.recall(query)['evidence']], [note])
+
+    def test_lexical_mixed_possessive_qualifier_matches_with_a_local_subject(self):
+        self.ingest('DeepSeek 负责问答。Nginx 配置文件在测试目录。')
+        query = '请教一下，DeepSeek 的配置文件在哪里？'
+        self.assert_empty(self.recall(query))
+        note = 'DeepSeek 配置文件在开发目录。'
+        self.ingest(note)
+        self.assertEqual([item['text'] for item in self.recall(query)['evidence']], [note])
+
     def test_lexical_prefix_does_not_suppress_substantive_original(self):
         text = '好滴，离线备份已经存到加密盘。'
         self.ingest(text)
@@ -276,6 +322,75 @@ class RecallPrecision(unittest.TestCase):
         self.ingest(SYNONYM, vector=(1.0, 0.0))
         result = self.recall('汽车方向盘保养', FixedEmbedder())
         self.assertEqual([row['text'] for row in result['evidence']], [SYNONYM])
+
+    def test_semantic_requires_matching_named_product_and_artifact_kind(self):
+        model = 'bge-m3'
+        self.ingest('DeepSeek 的日志文件在测试目录。', vector=(1.0, 0.0), model=model)
+        self.ingest('Nginx 的配置文件在测试目录。', vector=(1.0, 0.0), model=model)
+        for query in ('DeepSeek 的配置文件在哪里？', '请问 deepseek 的配置文件在哪里？',
+                      "where is deepseek's configuration file?"):
+            with self.subTest(query=query):
+                result = self.recall(query, FixedEmbedder(model=model))
+                self.assert_empty(result)
+                self.assertEqual(result['trace']['semantic_label_conflicts'], 2)
+
+    def test_wrong_semantic_leader_does_not_hide_correct_paraphrase(self):
+        model = 'bge-m3'
+        self.ingest('DeepSeek writes logs to the test directory.', vector=(1.0, 0.0), model=model)
+        self.ingest('Nginx stores the configuration file in setup.', vector=(.95, .312), model=model)
+        note = 'DeepSeek settings are saved in bootstrap.toml.'
+        self.ingest(note, vector=(.65, math.sqrt(1 - .65**2)), model=model)
+        result = self.recall('Where is the DeepSeek configuration file?', FixedEmbedder(model=model))
+        self.assertEqual([item['text'] for item in result['evidence']], [note])
+        self.assertEqual(result['trace']['routes']['raw_lexical'], 0)
+        self.assertEqual(result['trace']['routes']['raw_semantic'], 1)
+
+    def test_derived_match_cannot_introduce_an_original_about_another_product(self):
+        note = 'Nginx 的配置文件在测试目录。'
+        source = self.ingest(note, vector=(1.0, 0.0))
+        summary = self.store.add_derived(OWNER, CONVERSATION, 'summary', 'DeepSeek 的配置文件在测试目录。', [
+            {'message_id': source['id'], 'start': 0, 'end': len(note)},
+        ])
+        self.store.set_vector(OWNER, summary['id'], (1.0, 0.0), FixedEmbedder.model)
+        query = 'DeepSeek 的配置文件在哪里？'
+        self.assert_empty(self.recall(query))
+        self.assert_empty(self.recall(query, FixedEmbedder()))
+        self.assertEqual(self.store.get_message(OWNER, source['id'])['text'], note)
+
+    def test_derived_match_retains_only_independently_relevant_originals(self):
+        notes = ('DeepSeek 的配置文件在开发目录。', 'Nginx 的配置文件在测试目录。')
+        sources = [(self.ingest(note), note) for note in notes]
+        summary = self.store.add_derived(OWNER, CONVERSATION, 'summary', 'DeepSeek 的配置文件在开发目录。', [
+            {'message_id': source['id'], 'start': 0, 'end': len(note)} for source, note in sources
+        ])
+        result = self.recall('DeepSeek 的配置文件在哪里？')
+        self.assertEqual([item['text'] for item in result['evidence']], [notes[0]])
+        assertion = next(row for row in result['assertions'] if row['document_id'] == summary['id'])
+        self.assertFalse(assertion['source_complete'])
+        self.assertEqual([ref['message_id'] for ref in assertion['source_refs']], [sources[0][0]['id']])
+
+    def test_raw_embedding_does_not_ground_a_different_span_of_the_same_message(self):
+        text = '银色跑车的转向需要校准。周二晚上吃面条。'
+        source = self.ingest(text, vector=(1.0, 0.0))
+        derived = self.store.add_derived(OWNER, CONVERSATION, 'fact', '汽车方向盘需要维修。', [
+            {'message_id': source['id'], 'start': text.index('周二'), 'end': len(text)},
+        ])
+        self.store.set_vector(OWNER, derived['id'], (1.0, 0.0), FixedEmbedder.model)
+        result = self.recall('如何维修汽车方向盘？', FixedEmbedder())
+        self.assertEqual([item['text'] for item in result['evidence']], [text])
+        self.assertEqual(result['assertions'], [])
+
+    def test_lexical_limit_is_applied_after_disclosure_and_source_checks(self):
+        query = 'DeepSeek routing timeout'
+        note = 'DeepSeek routing timeout is bounded before fallback.'
+        saved = self.ingest(note)
+        for _ in range(45):
+            self.ingest(query, metadata={'disclosure': 'never_say'})
+        unfiltered = self.store.lexical_search(OWNER, query, conversation_id=CONVERSATION, kind='raw', limit=40)
+        self.assertNotIn(saved['document_ids'][0], [row['id'] for row in unfiltered])
+        for automatic in (True, False):
+            result = self.recall(query, automatic=automatic)
+            self.assertEqual([item['text'] for item in result['evidence']], [note])
 
     def test_lexical_retains_permissions_and_request_cutoff(self):
         self._assert_permissions_and_cutoff()
