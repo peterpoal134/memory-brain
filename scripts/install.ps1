@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 # Use this PowerShell host's utility module even when launched from a different host.
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $projectRoot = Split-Path -Parent $PSScriptRoot
-& (Join-Path $PSScriptRoot 'verify-package.ps1') -Root $projectRoot
+& (Join-Path $PSScriptRoot 'verify-package.ps1') -Root $projectRoot -RequireManifest:$Offline
 $env:PYTHONUTF8 = '1'
 $env:TEMP = Join-Path $projectRoot 'tmp'
 $env:TMP = $env:TEMP

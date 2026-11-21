@@ -15,7 +15,7 @@ import unittest
 
 OWNER = 'synthetic-owner'
 CONVERSATION = 'synthetic-conversation'
-NOISE = ('嗯嗯', '对的对的', '好的。', '嗯，嗯！', '可以。', 'ＯＫ。',
+NOISE = ('嗯嗯', '对的对的', '好的。', '好滴。', '嗯，嗯！', '可以。', 'ＯＫ。',
          'Yeah, okay, I see.', '嗯OK谢谢！')
 TOPIC = '语义索引建好后，先用嵌入模型检查向量维数。'
 SYNONYM = '银色跑车的转向需要校准。'
@@ -79,7 +79,7 @@ class RecallPrecision(unittest.TestCase):
         for text in NOISE * 8:
             self.ingest(text)
         self.ingest(TOPIC)
-        for query in ('嗯嗯，对的对的', '对的！', '嗯，嗯！', '好的。', 'ＯＫ。'):
+        for query in ('嗯嗯，对的对的', '对的！', '嗯，嗯！', '好的。', '好滴。', 'ＯＫ。'):
             with self.subTest(query=query):
                 self.assert_empty(self.recall(query))
 
@@ -112,14 +112,39 @@ class RecallPrecision(unittest.TestCase):
         self.assertTrue(self.recall(query, automatic=False)['evidence'])
         self.assert_empty(self.recall(query))
 
+    def test_mixed_query_requires_both_named_topic_and_qualifier(self):
+        self.ingest('Nginx 配置文件在测试目录。')
+        self.ingest('DeepSeek 写作示例在教程目录。')
+        self.assert_empty(self.recall('DeepSeek 配置'))
+        note = 'DeepSeek 配置文件在开发目录。'
+        self.ingest(note)
+        self.assertEqual([item['text'] for item in self.recall('DeepSeek 配置')['evidence']], [note])
+
+    def test_lexical_only_matching_cjk_subject_is_insufficient(self):
+        self.ingest('苹果手机换屏多少钱？')
+        self.ingest('苹果手机电子设备使用手册。')
+        self.assert_empty(self.recall('苹果手机电池寿命'))
+        self.assert_empty(self.recall('苹果手机电池寿命怎么样？'))
+        note = '苹果手机的电池寿命受充电循环影响。'
+        self.ingest(note)
+        self.assertEqual([item['text'] for item in self.recall('苹果手机电池寿命')['evidence']], [note])
+
     def test_lexical_a_short_specific_term_still_matches(self):
         self.ingest('宁夏的旅行图册在蓝色书架。')
         self.ingest('宁曦负责交接周报。')
         result = self.recall('宁曦？')
         self.assertEqual([row['text'] for row in result['evidence']], ['宁曦负责交接周报。'])
 
+    def test_lexical_preserves_particles_inside_topic_names(self):
+        note = '贴吧的登录测试已完成。'
+        self.ingest(note)
+        self.ingest('网吧的登录测试已完成。')
+        for query in ('贴吧？', '贴吧是什么？'):
+            with self.subTest(query=query):
+                self.assertEqual([item['text'] for item in self.recall(query)['evidence']], [note])
+
     def test_lexical_prefix_does_not_suppress_substantive_original(self):
-        text = '好的，离线备份已经存到加密盘。'
+        text = '好滴，离线备份已经存到加密盘。'
         self.ingest(text)
         self.ingest('好的。')
         result = self.recall('离线备份存到哪里了？')
@@ -181,6 +206,29 @@ class RecallPrecision(unittest.TestCase):
         days = {annotation['start'].split('T')[0] for row in result['evidence']
                 for annotation in row['time_annotations'] if annotation.get('status') == 'resolved'}
         self.assertEqual(days, {'1970-01-02', '1970-01-03'})
+
+    def test_dedupe_uses_the_same_relative_date_grammar_as_annotations(self):
+        moments = (100, 604900)
+        for expression, topic, expected in (
+            ('明日', '离线备份', {'1970-01-02', '1970-01-09'}),
+            ('二天后', '恢复归档', {'1970-01-03', '1970-01-10'}),
+            ('下礼拜一', '更新证书', {'1970-01-05', '1970-01-12'}),
+        ):
+            with self.subTest(expression=expression):
+                for moment in moments:
+                    self.ingest(f'{expression}执行{topic}。', recorded_at=moment)
+                evidence = self.recall(topic, as_of=700000)['evidence']
+                self.assertCountEqual([row['recorded_at'] for row in evidence], moments)
+                days = {annotation['start'].split('T')[0] for row in evidence
+                        for annotation in row['time_annotations'] if annotation.get('status') == 'resolved'}
+                self.assertEqual(days, expected)
+
+    def test_dedupe_still_removes_identical_fixed_date_records(self):
+        text = '2026-11-21 执行离线备份。'
+        for moment in (100, 604900):
+            self.ingest(text, recorded_at=moment)
+        evidence = self.recall('离线备份', as_of=700000)['evidence']
+        self.assertEqual([row['text'] for row in evidence], [text])
 
     def test_lexical_retains_substantive_short_payload(self):
         self.ingest('C++')

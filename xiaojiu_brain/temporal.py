@@ -29,10 +29,7 @@ _EN_WEEK=rf'(?:(?:last|this|next)\s+week(?:\s+{_WD})?|{_WD}\s+(?:of\s+)?(?:last|
 _EN_REL=r'(?:in\s+[0-9]+\s+(?:days?|weeks?)|[0-9]+\s+(?:days?|weeks?)\s+(?:ago|later|from\s+now|before|after))'
 _CN_EVENT_REL=rf'[\u3400-\u9fff]{{1,16}}[前后]{_NUM}(?:个)?(?:天|日|周|星期)'
 _EN_DATE=rf'(?:{_MON}\s+[0-9]{{1,2}}(?:,?\s+[0-9]{{4}})?|[0-9]{{1,2}}\s+{_MON}(?:\s+[0-9]{{4}})?)'
-_SCAN=re.compile('|'.join((
-    r'(?<![0-9A-Za-z_-])[0-9]{4}-[0-9]{2}-[0-9]{2}(?![0-9A-Za-z_-])',
-    r'(?<![0-9])[0-9]{4}年[0-9]{1,2}月[0-9]{1,2}[日号](?![0-9])',
-    rf'(?<![A-Za-z0-9]){_EN_DATE}(?![A-Za-z0-9])',
+_ANCHORED_DATE_REFERENCES='|'.join((
     rf'{_CN_WEEK}(?![一二三四五六日天0-9])',
     rf'(?<![A-Za-z0-9]){_EN_WEEK}(?![A-Za-z0-9])',
     _CN_EVENT_REL,
@@ -40,10 +37,21 @@ _SCAN=re.compile('|'.join((
     rf'(?<![A-Za-z0-9]){_EN_REL}(?![A-Za-z0-9])',
     r'今天|今日|昨天|昨日|前天|明天|明日|后天',
     r'(?<![A-Za-z])(?:the\s+day\s+before\s+yesterday|the\s+day\s+after\s+tomorrow|today|yesterday|tomorrow)(?![A-Za-z])',
+))
+_SCAN=re.compile('|'.join((
+    r'(?<![0-9A-Za-z_-])[0-9]{4}-[0-9]{2}-[0-9]{2}(?![0-9A-Za-z_-])',
+    r'(?<![0-9])[0-9]{4}年[0-9]{1,2}月[0-9]{1,2}[日号](?![0-9])',
+    rf'(?<![A-Za-z0-9]){_EN_DATE}(?![A-Za-z0-9])',
+    rf'(?P<anchored>{_ANCHORED_DATE_REFERENCES})',
     r'(?<![0-9年])[0-9]{1,2}月[0-9]{1,2}[日号]?(?![0-9])',
     r'(?:本月|上月|下月|[0-9]{1,2}月)?[上中下]旬|改天',
     r'(?<![0-9A-Za-z/])[0-9]{1,2}/[0-9]{1,2}(?![0-9A-Za-z/])',
 )),re.IGNORECASE)
+
+
+def has_anchored_date_reference(text):
+    """Recognize references whose meaning can depend on the source date."""
+    return any(match.lastgroup=='anchored' for match in _SCAN.finditer(text))
 
 
 def _result(expression,timezone,anchor_id=None):
