@@ -189,6 +189,8 @@ class BrainApp:
     def recall(self,data):
         self._apply_settings();settings=self.extensions.settings();query=str(data.get('query') or '').strip()
         if not query or len(query)>12000:raise ValueError('问题不能为空或过长')
+        automatic=data.get('automatic',False)
+        if type(automatic) is not bool:raise ValueError('自动召回标记必须为布尔值')
         include_life_context=data.get('include_life_context',True)
         if not isinstance(include_life_context,bool):raise ValueError('生活状态附加开关必须为布尔值')
         include_profile_context=data.get('include_profile_context',True)
@@ -215,7 +217,8 @@ class BrainApp:
         topics=data.get('requested_topics') or []
         if not isinstance(topics,list) or len(topics)>12 or any(not isinstance(t,str) or len(t)>80 for t in topics):raise ValueError('披露主题格式错误')
         result=self.retriever.recall(self.owner,None if settings['cross_conversation'] else conversation,query,
-          token_budget=budget,as_of=as_of,exclude_message_ids=exclude,requested_topics=topics,cutoff_message_id=cutoff_message_id)
+          token_budget=budget,as_of=as_of,exclude_message_ids=exclude,requested_topics=topics,
+          cutoff_message_id=cutoff_message_id,automatic=automatic)
         result['build_id']=self.build_id;personal=self.extensions.personalization() if include_profile_context else ''
         result.setdefault('trace',{})['profile_context_mode']='legacy_budgeted' if include_profile_context else 'independent_request_channel'
         if personal:

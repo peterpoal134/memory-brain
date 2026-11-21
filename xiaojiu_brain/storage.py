@@ -729,9 +729,11 @@ class Store:
             return self._documents(rows, vector_format=vector_format)
 
     def lexical_search(self, owner, query, conversation_id=None, limit=40, as_of=None, kind=None,
-                       include_archived=False, kinds=None, cutoff_message_id=None, *, include_details=True):
+                       include_archived=False, kinds=None, cutoff_message_id=None, *, include_details=True,
+                       query_tokens=None):
         """Retrieve ranked keyword hits, optionally with only IDs and lexical scores."""
-        tokens = list(dict.fromkeys(_lexical_tokens(str(query or ""))))[:256]
+        terms = _lexical_tokens(str(query or "")) if query_tokens is None else query_tokens
+        tokens = list(dict.fromkeys(terms))[:256]
         if not tokens:
             return []
         expression = " OR ".join('"'+t.replace('"','""')+'"' for t in tokens)

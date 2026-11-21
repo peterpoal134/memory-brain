@@ -1,7 +1,7 @@
 """Independent raw/derived retrieval with scoped, source-faithful evidence.
 
-There are no topic classifiers or question-pattern vetoes. Hard exclusions are
-identity/time/status, invalid source spans, and explicit disclosure policies.
+Automatic recall applies relevance criteria after scope and source checks.
+Explicit retrieval retains the original candidate and evidence behavior.
 """
 from __future__ import annotations
 
@@ -21,6 +21,13 @@ from .relations import relation_candidates, contextual_candidates
 from .temporal import source_times
 from .due_candidates import due_candidates
 from .update_candidates import update_candidates
+from .recall_relevance import (
+    SEMANTIC_TOP_MARGIN, STRONG_SEMANTIC_SCORE, LexicalSignal,
+    evidence_identity, low_information, semantic_floor,
+)
+
+
+_CORE_ROUTES = ("raw_lexical", "derived_lexical", "raw_semantic", "derived_semantic")
 
 
 def _epoch(value):
@@ -149,7 +156,8 @@ class Retriever:
         return dt.datetime.fromtimestamp(float(message["recorded_at"]), self.timezone).isoformat()
 
     def recall(self, owner, conversation_id, query, token_budget=1200, as_of=None,
-               include_archived=False, exclude_message_ids=None, requested_topics=None, cutoff_message_id=None):
+               include_archived=False, exclude_message_ids=None, requested_topics=None, cutoff_message_id=None,
+               *, automatic=False):
         if not isinstance(owner, str) or not owner.strip():
             raise ValueError("owner is required")
         if conversation_id is None:
@@ -159,6 +167,8 @@ class Retriever:
             raise ValueError("conversation_id must be nonempty")
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be nonempty")
+        if type(automatic) is not bool:
+            raise ValueError("automatic must be boolean")
         if requested_topics is not None and not isinstance(requested_topics, (list, tuple)):
             raise ValueError("requested_topics must be a list")
         if exclude_message_ids is not None and not isinstance(exclude_message_ids, (list, tuple, set, frozenset)):
@@ -174,6 +184,15 @@ class Retriever:
                  "token_budget": token_budget, "token_estimator": "ceil(utf8_bytes/3)",
                  "coverage_certified": False}
         degraded, gaps = [], []
+        if automatic and low_information(query):
+            gaps.append({"code": "low_information_query"})
+            trace.update(routes=dict.fromkeys(_CORE_ROUTES, 0), selected_evidence=0, ranked_documents=0,
+                         ranked_candidates=[], selected_document_ids=[], selected_sources=[], estimated_tokens=0,
+                         degraded=degraded, coverage_gaps=gaps, recall_mode="automatic",
+                         milliseconds=round((time.monotonic() - started) * 1000, 3))
+            return {"evidence": [], "assertions": [], "conflicts": [], "coverage_gaps": gaps,
+                    "degraded": degraded, "trace": trace, "block": "", "policy_version": POLICY_VERSION}
+        lexical_signal = LexicalSignal(query) if automatic else None
         excluded_internal = {x for x in (exclude_message_ids or []) if isinstance(x, int) and not isinstance(x, bool)}
         excluded_external = {x for x in (exclude_message_ids or []) if isinstance(x, str)}
         # Read only this owner's scope before any top-k ranking. Archived
@@ -238,6 +257,8 @@ class Retriever:
             return quotes, None
 
         eligible, references = {}, {}
+        partially_filtered_sources = set()
+        low_information_documents = 0
         for doc in scoped:
             if doc.get("status", "active") != "active" and not include_archived:
                 continue
@@ -250,10 +271,20 @@ class Retriever:
                 counter = "withheld_documents" if error == "withheld" else "invalid_source_documents"
                 trace[counter] += 1
                 continue
+            if automatic:
+                informative = [quote for quote in quotes if not low_information(quote["text"])]
+                if not informative or low_information(doc["text"]):
+                    low_information_documents += 1
+                    continue
+                if len(informative) != len(quotes):
+                    partially_filtered_sources.add(str(doc["id"]))
+                quotes = informative
             key = str(doc["id"])
             eligible[key] = doc
             references[key] = quotes
         trace["eligible_documents"] = len(eligible)
+        if automatic:
+            trace.update(recall_mode="automatic", low_information_documents=low_information_documents)
         if trace["withheld_documents"]:
             gaps.append({"code": "disclosure_withheld", "count": trace["withheld_documents"],
                          "message": "部分资料因披露限制未进入请求；这不表示记录不存在。"})
@@ -266,22 +297,24 @@ class Retriever:
             checked=[(messages[ref['message_id']],ref['start'],ref['end']) for ref in references[key]]
             claim=canonical_claim(doc.get('metadata') or {},checked_sources=checked,timezone=str(self.timezone))
             if claim is not None:normalized_claims[key]=claim
-        routes = {name: [] for name in ["raw_lexical", "derived_lexical", "raw_semantic", "derived_semantic"]}
+        routes = {name: [] for name in _CORE_ROUTES}
+        lexical_options = {} if lexical_signal is None else {"query_tokens": lexical_signal.tokens}
         try:
             for kind, route in [("raw", "raw_lexical"), ("derived", "derived_lexical")]:
                 lexical = self.store.lexical_search(owner, query, conversation_id=conversation_id,
                     limit=40, as_of=cutoff, kind=kind, include_archived=include_archived,
-                    cutoff_message_id=cutoff_message_id, include_details=False)
+                    cutoff_message_id=cutoff_message_id, include_details=False, **lexical_options)
                 for d in lexical:
                     key = str(d["id"])
-                    if key in eligible and key not in routes[route]:
+                    if (key in eligible and key not in routes[route]
+                            and (lexical_signal is None or lexical_signal.matches(eligible[key]["text"]))):
                         routes[route].append(key)
         except Exception as exc:
             degraded.append("lexical_provider_error:" + type(exc).__name__)
         similarities = {}
         if embedder is None:
             degraded.append("embedding_not_configured")
-        else:
+        elif eligible or not automatic:
             try:
                 vectors = embedder.embed_many([query])
                 if len(vectors) != 1 or _cosine(vectors[0], vectors[0]) is None:
@@ -294,15 +327,23 @@ class Retriever:
                     score = _cosine_for_query(prepared_query, d.get("vector"))
                     if score is not None:
                         similarities[key] = score
+                floor = semantic_floor(model) if automatic else -math.inf
+                strongest = max(similarities.values(), default=floor)
                 for kind, route in [(True, "raw_semantic"), (False, "derived_semantic")]:
-                    keys = [key for key in similarities if (eligible[key].get("kind") == "raw") == kind]
+                    keys = [key for key, score in similarities.items()
+                            if score >= floor and (eligible[key].get("kind") == "raw") == kind
+                            and (not automatic or score >= STRONG_SEMANTIC_SCORE or score >= strongest - SEMANTIC_TOP_MARGIN)]
                     routes[route] = sorted(keys, key=lambda key: (-similarities[key], key))[:40]
                 trace["embedding_model"] = model
                 trace["semantic_indexed_documents"] = len(similarities)
+                if automatic:
+                    trace["semantic_min_similarity"] = floor
                 if len(similarities) < len(eligible):
                     degraded.append("semantic_index_incomplete")
             except Exception as exc:
                 degraded.append("embedding_provider_error:" + type(exc).__name__)
+        else:
+            trace["semantic_indexed_documents"] = 0
 
         route,relation_trace=relation_candidates(eligible,normalized_claims,query,owner,conversation_id)
         routes['entity_relation']=route;trace['relations']=relation_trace
@@ -317,7 +358,8 @@ class Retriever:
         else:
             trace['later_related']={'enabled':False}
         if self.due_candidates_enabled:
-            route,due_trace=due_candidates(eligible,references,messages,query,cutoff,str(self.timezone))
+            route,due_trace=due_candidates(eligible,references,messages,query,cutoff,str(self.timezone),
+                                          explicit_only=automatic)
             routes['date_leads']=route;trace['date_leads']=due_trace
         else:
             trace['date_leads']={'enabled':False}
@@ -374,6 +416,7 @@ class Retriever:
         reserve=estimate_tokens(_CONFLICT_LINE)+1 if _question_options(query) and token_budget>=used+estimate_tokens(_CONFLICT_LINE)+100 else 0
         evidence_budget=token_budget-reserve
         remaining = dict(units)
+        selected_texts = set()
         omitted = 0
         while remaining:
             source_ids = {r[0] for r in selected_spans}
@@ -390,6 +433,9 @@ class Retriever:
             if _covered(span, selected_spans):
                 continue
             ref = u["ref"]
+            identity = evidence_identity(ref) if automatic else None
+            if automatic and identity in selected_texts:
+                continue
             if ref["source_kind"] == "imported_memory":
                 label, citation = "旧库导入笔记（非对话原话，原说话者未核实；时间为旧记录时间）", "导入记录"
             elif ref["source_kind"] == "owner_note":
@@ -406,6 +452,8 @@ class Retriever:
                 continue
             used += cost
             selected_spans.append(span)
+            if automatic:
+                selected_texts.add(identity)
             selected.append({"document_id": u["document_id"], "kind": u["kind"],
                     "text": ref["text"], "role": ref["role"], "recorded_at": ref["recorded_at"],
                     "source_kind": ref["source_kind"], "is_original_utterance": ref["is_original_utterance"],
@@ -459,7 +507,8 @@ class Retriever:
                 if key in normalized_claims:metadata['claim']=normalized_claims[key]
                 assertions.append({"document_id": key, "kind": doc.get("kind"), "text": doc["text"],
                     "metadata": metadata, "source_refs": [{k:v for k,v in r.items() if k!='text'} for r in refs],
-                    "source_complete": all(_covered((r["message_id"], r["start"], r["end"]), selected_spans) for r in refs),
+                    "source_complete": key not in partially_filtered_sources and all(
+                        _covered((r["message_id"], r["start"], r["end"]), selected_spans) for r in refs),
                     "claims_verified": False})
         conflicts = self._alternatives(assertions)
         # Only add a generic caution when at least two full, already-delivered

@@ -1,0 +1,100 @@
+name: Publish verified 0.2.10 recall update
+
+on:
+  push:
+    branches: [release/0.2.10-recall-relevance]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: memory-brain-release-0.2.10
+  cancel-in-progress: false
+
+env:
+  RELEASE_BRANCH: release/0.2.10-recall-relevance
+  EXPECTED_MAIN: '515df6453b07de64fba480330f9b9349181bab4e'
+
+jobs:
+  verify-and-publish:
+    if: github.repository == 'peterpoal134/memory-brain' && github.ref == 'refs/heads/release/0.2.10-recall-relevance'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Verify the reviewed release baseline
+        run: |
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          git merge-base --is-ancestor "$EXPECTED_MAIN" HEAD
+          published_tag=$(git ls-remote --tags origin refs/tags/v0.2.10)
+          test -z "$published_tag"
+      - name: Test lexical and vector recall with isolated fixtures
+        run: |
+          python -I -B -X utf8 checks/test_recall_relevance.py --source .
+          python -I -B -X utf8 checks/test_recall_resources.py
+          python -I -B -X utf8 checks/test_storage_stability.py
+          python -I -B -X utf8 checks/test_transport_lifecycle.py
+          python -I -B -X utf8 checks/test_timeout_config.py
+          python -I -B -X utf8 checks/test_http_stability.py --source .
+      - name: Build and verify the reviewed public distribution
+        run: |
+          python -X utf8 scripts/build_plugin_release.py --out dist
+          python -I -B -X utf8 checks/verify_release_0210.py
+      - name: Exercise official DSH 0.2.2-rc.3 using isolated test data
+        env:
+          DSH_RUNTIME: ${{ runner.temp }}/dsh-rc3
+          DSH_COMPAT_RUNTIME: ${{ runner.temp }}/dsh-rc3
+          MEMORY_BRAIN_ENTRY: ${{ github.workspace }}/adapters/dsh/memory-brain.mjs
+        run: |
+          node checks/prepare_compat_runtime.mjs --out "$DSH_RUNTIME"
+          node checks/test_runtime_discovery.mjs
+          node checks/test_discovery_identity.mjs
+          node checks/test_discovery_diagnostics.mjs
+          node checks/test_probe_read_errors.mjs
+          node checks/test_host_compatibility.mjs
+          node --unhandled-rejections=strict checks/test_verified_loop_syntax.mjs
+          node --unhandled-rejections=strict checks/test_archive_only.mjs
+          node --unhandled-rejections=strict checks/test_request_bridge_admission.mjs
+          node --unhandled-rejections=strict checks/integration/run.mjs
+          node --unhandled-rejections=strict checks/launch_discovery_integration.mjs
+      - name: Preserve storage, context and queue behavior
+        run: |
+          node --unhandled-rejections=strict checks/test_recall_admission.mjs .
+          node --unhandled-rejections=strict checks/test_onboarding_cleanup.mjs
+          node checks/test_request_budget_units.mjs
+          node checks/test_plugin.mjs
+          node checks/test_plugin_life.mjs
+          node checks/test_session_resources.mjs
+          node checks/test_queue_resources.mjs
+          node --unhandled-rejections=strict checks/test_delivered_maintenance.mjs
+      - name: Attach the verified wheel and manifests
+        run: |
+          python -I -B -X utf8 checks/verify_release_0210.py --prepare-promotion
+          python -I -B -X utf8 checks/test_recall_relevance.py --source wheels/xiaojiu_brain-0.2.10-py3-none-any.whl
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --force -- PUBLIC-RELEASE.json SHA256SUMS.json wheels/xiaojiu_brain-0.2.10-py3-none-any.whl
+          git diff --cached --quiet || git commit -m 'build: attach verified 0.2.10 distribution'
+      - name: Promote the verified commit
+        run: |
+          git fetch origin main "$RELEASE_BRANCH"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse "origin/$RELEASE_BRANCH")" = "$GITHUB_SHA"
+          published_tag=$(git ls-remote --tags origin refs/tags/v0.2.10)
+          test -z "$published_tag"
+          git push --atomic origin HEAD:refs/heads/main "HEAD:refs/heads/$RELEASE_BRANCH"
+      - name: Publish the verified downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.2.10 dist/memory-brain-dsh-0.2.10-public.zip dist/memory-brain-dsh-0.2.10-public.zip.sha256 --target "$(git rev-parse HEAD)" --title 'v0.2.10 召回相关性修复' --notes-file docs/RELEASE-0.2.10.md --latest

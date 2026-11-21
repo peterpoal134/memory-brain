@@ -542,7 +542,7 @@ export async function createAdapter(ctx, config = {}) {
             const response = await fetchImpl(baseUrl + '/v1/recall', { method: 'POST', redirect: 'error', signal: ac.signal,
               headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
               body: JSON.stringify({ conversation_id: conversation, query: turn.text, current_message_id: turn.id, token_budget: config.tokenBudget || 1200,
-                include_life_context: false, include_profile_context: false }) });
+                automatic: true, include_life_context: false, include_profile_context: false }) });
             const reply = await response.json();
             if (!response.ok || reply?.ok !== true || typeof reply.data?.block !== 'string') throw new Error('recall_unconfirmed');
             if (reply.data.degraded?.length) warn('recall_degraded:' + reply.data.degraded.map(x => String(x).replace(/[^a-zA-Z0-9_:.-]/g, '')).join(','));

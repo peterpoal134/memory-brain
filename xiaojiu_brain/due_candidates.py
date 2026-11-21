@@ -16,7 +16,8 @@ _DISTRESS=re.compile(r'难过|伤心|崩溃|焦虑|悲伤|心情不好|发蔫|�
 _DIRECT_PLAN=re.compile(r'提醒我|今天.{0,8}(?:安排|计划|预约|待办|行程)|(?:安排|计划|预约|待办|行程).{0,8}今天')
 _SENSITIVE=re.compile(r'医院|医生|病历|复诊|手术|治疗|心理|工资|债务|财务|密码|住址|私事|秘密|隐私')
 
-def due_candidates(documents, references, messages, query, cutoff, timezone, *, max_scan=512, limit=2):
+def due_candidates(documents, references, messages, query, cutoff, timezone, *, max_scan=512, limit=2,
+                   explicit_only=False):
     """Return at most two document IDs with a matching *date reference*.
 
     A date match does not prove that a plan still applies. Model output must
@@ -26,6 +27,8 @@ def due_candidates(documents, references, messages, query, cutoff, timezone, *, 
            'meaning':'source_date_reference_not_verified_due_event'}
     if _QUERY_VETO.search(query):
         trace['suppressed']='explicit_query_boundary';return [],trace
+    if explicit_only and not _DIRECT_PLAN.search(query):
+        trace['suppressed']='automatic_requires_plan_query';return [],trace
     # Suppress speculative, unsolicited date leads when the current message
     # signals distress. An explicit request for plans may still be answered;
     # the owner's negative boundary above always takes precedence.

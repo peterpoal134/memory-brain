@@ -9,6 +9,7 @@ import re
 from zoneinfo import ZoneInfo
 
 from .policy import disclosure_decision
+from .recall_relevance import low_information
 
 MAX_SOURCES = 48
 MAX_MATCHES = 4
@@ -82,7 +83,7 @@ def _quote(message, segments, keyword, match):
 
 def search(app, data):
     fields = {'conversation_id', 'request_message_id', 'request_body_sha256', 'keyword', 'from_time',
-              'to_time', 'auto_time', 'ascending', 'capture_after', 'sources'}
+              'to_time', 'auto_time', 'ascending', 'capture_after', 'sources', 'automatic'}
     if not isinstance(data, dict) or set(data) - fields:
         raise ValueError('history_invalid_fields')
     conversation = _identifier(data.get('conversation_id'), 'conversation')
@@ -94,7 +95,8 @@ def search(app, data):
     if not isinstance(keyword, str) or len(keyword.strip()) > 80:
         raise ValueError('history_invalid_keyword')
     keyword = keyword.strip()
-    if type(data.get('auto_time', False)) is not bool or type(data.get('ascending', False)) is not bool:
+    automatic = data.get('automatic', False)
+    if any(type(value) is not bool for value in (automatic, data.get('auto_time', False), data.get('ascending', False))):
         raise ValueError('history_invalid_mode')
     after, before = _time(data.get('from_time')), _time(data.get('to_time'))
     if after is not None and before is not None and after > before:
@@ -133,6 +135,8 @@ def search(app, data):
         current = app.store.find_message(app.owner, conversation, request_id, role='user')
         if not current or hashlib.sha256(current['text'].encode('utf-8')).hexdigest() != request_hash:
             return {**result, 'state': 'current_request_not_confirmed'}
+        if automatic and low_information(keyword):
+            return {**result, 'state': 'no_authorized_match'}
         if data.get('auto_time') and after is None and before is None:
             question = current['text']
             if '昨天' in question or '今天' in question:
@@ -150,6 +154,8 @@ def search(app, data):
             raise ValueError('history_keyword_or_time_required')
         validated = []
         for item in checked:
+            if automatic and item.get('neighbor_of') is not None:
+                continue
             if capture_after is not None and item['event_time'] <= capture_after:
                 continue
             message = app.store.find_message(app.owner, conversation, item['message_id'], item['role'])
@@ -186,7 +192,7 @@ def search(app, data):
         for item, message in validated:
             ranges = _segments(allowed.get(message['id'], []), protected.get(message['id'], []), len(message['text']))
             quote = _quote(message, ranges, keyword, item.get('neighbor_of') is None)
-            if quote is None:
+            if quote is None or (automatic and low_information(quote['text'])):
                 continue
             entry = {'seq': item['seq'], 'message_id': message['message_id'], 'source_message_id': message['id'],
                      'role': message['role'], 'recorded_at': message['recorded_at'],
